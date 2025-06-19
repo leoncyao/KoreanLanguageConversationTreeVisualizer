@@ -1,0 +1,52 @@
+# Node modules
+node_modules/
+
+# Dependency directories
+package-lock.json
+yarn.lock
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Log files
+*.log
+
+# Build output
+build/
+dist/
+
+# Backup files
+*~
+*.bak
+
+# Environment files
+.env
+.env.*
+
+# Miscellaneous
+*.tmp
+*.temp
+
+# Ignore data and output files
+*.json
+!src/**/*.json
+!public/**/*.json
+
+# Ignore shell scripts
+*.sh
+
+# Ignore Mermaid diagrams
+*.mmd 
