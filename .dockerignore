@@ -1,0 +1,57 @@
+# Dependencies
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+build
+dist
+
+# Development files
+.git
+.gitignore
+README.md
+*.md
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage
+
+# Old/unused files
+old
+TODO.md
+HOT_RELOAD_GUIDE.md
+DEPLOYMENT.md
+dev-start.sh
+start-prod.sh
+deploy.sh
+
+# Docker files (except the ones we need)
+dockerfile
+Dockerfile.dev
+
+

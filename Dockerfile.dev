@@ -1,0 +1,18 @@
+FROM node:20
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies (including dev dependencies)
+RUN npm install
+
+# Copy source code
+COPY . .
+
+# Expose ports (will be overridden by docker-compose)
+EXPOSE 3000 3001 5000 5001
+
+# Start development server
+CMD ["npm", "run", "dev"]

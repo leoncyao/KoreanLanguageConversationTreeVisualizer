@@ -1,7 +1,4 @@
-<<<<<<< HEAD
 # KoreanLanguageConversationTreeVisualizer
-=======
-# Korean Conversation Tree Game
 
 An interactive React application for learning Korean through conversation trees. The app dynamically builds conversation paths as you progress and provides real-time feedback on your Korean language skills.
 
@@ -73,5 +70,4 @@ To add new conversations or modify existing ones, edit the `src/conversation_tre
 - React 18
 - Mermaid.js for tree visualization
 - CSS Grid for responsive layout
-- JSON for conversation data storage 
->>>>>>> 24ee0da8 (Initial commit)
+- JSON for conversation data storage

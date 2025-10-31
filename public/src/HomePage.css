@@ -1,0 +1,239 @@
+.homepage {
+  text-align: center;
+  padding: 20px;
+}
+
+.homepage h1 {
+  font-size: 4rem;
+  color: #333;
+  margin-bottom: 20px;
+}
+
+.homepage p {
+  font-size: 1.5rem;
+  color: #666;
+  margin-bottom: 30px;
+}
+
+.sentence-box {
+  background-color: #f0f2f5;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+}
+
+.korean-sentence {
+  font-size: 2.5rem;
+  color: #2c3e50;
+  margin-bottom: 10px;
+  line-height: 1.5;
+  display: flex;
+  justify-content: center;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px;
+  word-break: keep-all;
+  max-width: 100%;
+  padding: 0 10px;
+}
+
+.fill-in-blank-input {
+  border: none;
+  border-bottom: 2px solid #3498db;
+  background: none;
+  text-align: center;
+  font-size: 2.5rem;
+  color: #e74c3c;
+  margin: 0;
+  min-width: 3em;
+  max-width: 90vw;
+  padding: 5px 0;
+  vertical-align: baseline;
+  box-sizing: border-box;
+}
+
+.fill-in-blank-input:focus {
+  outline: none;
+  border-bottom-color: #2980b9;
+}
+
+.translation {
+  font-size: 1.5rem;
+  color: #7f8c8d;
+  margin-top: 2px;
+  font-style: italic;
+}
+
+.feedback {
+  font-size: 1.5rem;
+  font-weight: bold;
+  margin-top: 8px;
+  min-height: 1.8rem; /* Ensure space for feedback */
+}
+
+.feedback:empty {
+  visibility: hidden;
+}
+
+.feedback:not(:empty) {
+  visibility: visible;
+}
+
+.feedback:contains("Correct!") {
+  color: #27ae60;
+}
+
+.feedback:contains("Incorrect") {
+  color: #e74c3c;
+}
+
+.correct-count {
+  font-size: 1rem;
+  color: #555;
+  margin-top: 8px;
+}
+
+.extra-box {
+  background-color: #e9ecef; /* different grey */
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.extra-title {
+  font-size: 1.4rem;
+  color: #34495e;
+  margin: 0;
+}
+
+.translation-input-container {
+  display: flex;
+  align-items: center;
+  gap: 0px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.translation-input {
+  border: none;
+  border-bottom: 2px solid #3498db;
+  background: none;
+  text-align: center;
+  font-size: 1.8rem;
+  color: #2c3e50;
+  width: 300px;
+  padding: 0px 0;
+  vertical-align: baseline;
+}
+
+.translation-input:focus {
+  outline: none;
+  border-bottom-color: #2980b9;
+}
+
+.response-box {
+  margin-top: 10px;
+  padding: 0px;
+  background-color: #f8f9fa;
+  border-radius: 6px;
+  border: 1px solid #dee2e6;
+}
+
+.response-text {
+  padding: 0;
+  font-size: 1.2rem;
+  color: #2c3e50;
+  margin: 0;
+  min-height: 1.5rem;
+}
+
+.start-button {
+  background-color: #007bff;
+  color: white;
+  padding: 15px 30px;
+  border-radius: 5px;
+  text-decoration: none;
+  font-size: 1.2rem;
+  transition: background-color 0.3s ease;
+}
+
+.start-button:hover {
+  background-color: #0056b3;
+}
+
+/* Model Sentence and Variation Styles */
+.variation-indicator {
+  background-color: #e3f2fd;
+  color: #1976d2;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 10px;
+  display: inline-block;
+}
+
+.model-info {
+  color: #666;
+  font-size: 0.85rem;
+  margin-bottom: 15px;
+  font-style: italic;
+}
+
+.instructions {
+  font-size: 1.2rem;
+  color: #666;
+  margin: 20px 0;
+}
+
+.generate-button,
+.regenerate-button {
+  background-color: #4CAF50;
+  color: white;
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin-top: 15px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+}
+
+.generate-button:hover:not(:disabled),
+.regenerate-button:hover:not(:disabled) {
+  background-color: #45a049;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+  transform: translateY(-2px);
+}
+
+.generate-button:disabled,
+.regenerate-button:disabled {
+  background-color: #cccccc;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.regenerate-button {
+  background-color: #2196F3;
+  margin-top: 20px;
+}
+
+.regenerate-button:hover:not(:disabled) {
+  background-color: #0b7dda;
+}
+
+.error-message {
+  color: #d32f2f;
+  padding: 12px;
+  background-color: #ffebee;
+  border-radius: 8px;
+  margin: 10px 0;
+  font-size: 1rem;
+}

@@ -74,6 +74,9 @@ function App() {
   return (
     <div className="App">
       <div className="container">
+        <div style={{textAlign: 'center', margin: '20px 0'}}>
+          <a href="/test-chat.html" style={{display: 'inline-block', padding: '10px 20px', background: '#007bff', color: 'white', borderRadius: '5px', textDecoration: 'none'}}>Test ChatGPT API</a>
+        </div>
         <h1>Korean Conversation Tree Game</h1>
         <div className="game-container">
           <ConversationTree 
