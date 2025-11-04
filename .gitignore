@@ -45,8 +45,15 @@ dist/
 !src/**/*.json
 !public/**/*.json
 
-# Ignore shell scripts
+# Ignore shell scripts (except utility scripts)
 *.sh
+!backend/generate-ssl.sh
 
 # Ignore Mermaid diagrams
-*.mmd 
+*.mmd
+
+# SSL certificates (don't commit private keys)
+backend/ssl/*.pem
+backend/ssl/*.key
+backend/ssl/*.crt
+!backend/ssl/.gitkeep 

@@ -1,3 +1,5 @@
+const Database = require('./database');
+
 // API to generate sentence variations based on a model sentence
 async function handleGenerateVariations(req, res) {
   try {
@@ -9,17 +11,33 @@ async function handleGenerateVariations(req, res) {
 
     console.log('Generating variations for:', { english, korean });
 
-    const prompt = `Given this Korean model sentence: "${korean}" (English: "${english}")
+    // Load learning words to bias variations
+    let learningWords = [];
+    try {
+      const db = new Database();
+      await db.init();
+      learningWords = await db.getLearningWords(50);
+    } catch (e) {
+      console.warn('Could not load learning words:', e && e.message ? e.message : e);
+    }
+
+    const learningLine = (learningWords && learningWords.length > 0)
+      ? `\nTarget learning words to favor (include 1-2 when natural): ${learningWords.map(w => w.korean).join(', ')}`
+      : '';
+
+    const prompt = `Given this Korean model sentence: "${korean}" (English: "${english}")${learningLine}
 
 Generate 5 similar sentence variations in Korean that are CLOSELY RELATED to the model sentence:
 
 Requirements:
-1. Use THE SAME grammar structure and sentence pattern
-2. Use SIMILAR vocabulary themes (if model is about students, make variations about students, teachers, schools, etc.)
-3. Keep the SAME level of formality (polite/casual)
+1. Use Similar grammar structure and sentence pattern, can vary tense. 
+2. Vary Subject, Object, Adjectives, Adverbs, etc. Only care about grammatical structure, can vary order and grammar if not too much
+3. Keep the SAME level of formality always prefer casual
 4. Keep SIMILAR sentence length and complexity
 5. Make sentences that feel like natural practice variations of the model
 6. If the model uses specific verb tenses or particles, use the same ones
+7. Prefer to incorporate 1-2 of the target learning words when it sounds natural and stays close to the model
+8. Try to vary cosonant and vowel endings on words
 
 Examples of good variations:
 Model: "나는 학생이에요" (I am a student)

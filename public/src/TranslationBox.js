@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { api } from './api';
 import './HomePage.css';
 
-function TranslationBox() {
+function TranslationBox({ onTranslated }) {
   const [freeInputValue, setFreeInputValue] = useState('');
   const [translatedValue, setTranslatedValue] = useState('');
   const inputRef = useRef(null);
@@ -22,6 +22,11 @@ function TranslationBox() {
         if (response.ok) {
           const data = await response.json();
           setTranslatedValue(data.corrected || '');
+          if (onTranslated && data.corrected) {
+            try {
+              onTranslated({ input: freeInputValue, translation: data.corrected });
+            } catch (_) {}
+          }
         } else {
           setTranslatedValue('Translation failed');
         }

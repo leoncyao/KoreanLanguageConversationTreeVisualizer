@@ -12,6 +12,11 @@ export const api = {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ correct })
   }),
+  chat: (prompt) => fetch(`${API_BASE_URL}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt })
+  }),
   
   // Sentences API
   getSentences: () => fetch(`${API_BASE_URL}/api/sentences`),
@@ -37,12 +42,33 @@ export const api = {
 
   // Words by part of speech
   getWordsByType: (type, limit = 50) => fetch(`${API_BASE_URL}/api/words/${type}?limit=${limit}`),
+  getLearningWords: (limit = 200) => fetch(`${API_BASE_URL}/api/words/learning?limit=${limit}`),
   getWordsSummary: () => fetch(`${API_BASE_URL}/api/words/stats/summary`),
   updateWordCorrect: (word) => fetch(`${API_BASE_URL}/api/words/correct`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ word })
   }),
+  updateWordTags: (type, korean, tags) => fetch(`${API_BASE_URL}/api/words/tags`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, korean, ...tags })
+  }),
+  checkWordLearned: (word, threshold = 20) => fetch(`${API_BASE_URL}/api/words/check-learned`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ word, threshold })
+  }),
+  getGrammarRules: (limit = 200) => fetch(`${API_BASE_URL}/api/grammar-rules?limit=${limit}`),
+  addGrammarRule: (rule) => fetch(`${API_BASE_URL}/api/grammar-rules`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rule)
+  }),
+  deleteGrammarRule: (id) => fetch(`${API_BASE_URL}/api/grammar-rules/${id}`, { method: 'DELETE' }),
+  getModelVariations: () => fetch(`${API_BASE_URL}/api/model-variations`),
+  saveModelVariations: (variations) => fetch(`${API_BASE_URL}/api/model-variations`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ variations })
+  }),
+  clearModelVariations: () => fetch(`${API_BASE_URL}/api/model-variations`, { method: 'DELETE' }),
 
   // Model sentence
   getModelSentence: () => fetch(`${API_BASE_URL}/api/model-sentence`),
@@ -53,6 +79,28 @@ export const api = {
   }),
   clearModelSentence: () => fetch(`${API_BASE_URL}/api/model-sentence`, {
     method: 'DELETE'
+  }),
+
+  // Curriculum phrases API
+  getCurriculumPhrases: () => fetch(`${API_BASE_URL}/api/curriculum-phrases`),
+  getRandomCurriculumPhrase: () => fetch(`${API_BASE_URL}/api/curriculum-phrases/random`),
+  addCurriculumPhrase: (phrase) => fetch(`${API_BASE_URL}/api/curriculum-phrases`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(phrase)
+  }),
+  updateCurriculumPhrase: (id, phrase) => fetch(`${API_BASE_URL}/api/curriculum-phrases/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(phrase)
+  }),
+  deleteCurriculumPhrase: (id) => fetch(`${API_BASE_URL}/api/curriculum-phrases/${id}`, {
+    method: 'DELETE'
+  }),
+  updateCurriculumPhraseStats: (id, correct) => fetch(`${API_BASE_URL}/api/curriculum-phrases/${id}/correct`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ correct })
   })
 };
 

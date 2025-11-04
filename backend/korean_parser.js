@@ -15,7 +15,7 @@ For each word, provide:
 - korean: the Korean word
 - english: English meaning
 - romanization: romanization (like "annyeonghaseyo")
-- pos: part of speech (noun, verb, adjective, adverb, pronoun, conjunction, particle)
+- pos: part of speech (one of: noun, proper-noun, verb, adjective, adverb, pronoun, conjunction, particle)
 - base_form: (for verbs/adjectives only) the dictionary/base form
 - type: (for pronouns: personal/demonstrative/interrogative, particles: subject/object/topic)
 
@@ -23,6 +23,7 @@ IMPORTANT:
 - Particles (조사) like 은/는, 이/가, 을/를, 에, 에서, 으로, etc. should be separate words
 - Break compound words if they have clear parts of speech
 - Conjugated verbs/adjectives: show both current form and base form
+- Proper nouns (names of people, places, organizations, cities like "밴쿠버" for Vancouver) should have pos = "proper-noun" (not generic noun)
 
 Respond with ONLY a JSON array in this format:
 [
@@ -45,6 +46,12 @@ Respond with ONLY a JSON array in this format:
     "english": "student",
     "romanization": "haksaeng",
     "pos": "noun"
+  },
+  {
+    "korean": "밴쿠버",
+    "english": "Vancouver",
+    "romanization": "baenku-beo",
+    "pos": "proper-noun"
   }
 ]
 

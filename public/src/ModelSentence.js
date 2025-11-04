@@ -48,6 +48,7 @@ function ModelSentence({ onModelUpdate }) {
         // Save to database
         try {
           await api.saveModelSentence(englishInput.trim(), data.corrected);
+          try { await api.clearModelVariations(); } catch (_) {}
         } catch (saveErr) {
           console.error('Failed to save model sentence to database:', saveErr);
         }

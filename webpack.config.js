@@ -3,7 +3,9 @@ const webpack = require('webpack');
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 
-const backendPort = process.env.BACKEND_PORT || 5001; // default for dev
+// Determine if we're in development or production
+const isDev = process.env.NODE_ENV !== 'production';
+const backendPort = process.env.BACKEND_PORT || (isDev ? 5001 : 5000);
 const backendHost = process.env.BACKEND_HOST || '99.230.251.252'; // Your IP for cross-device access
 const backendUrl = `http://${backendHost}:${backendPort}`;
 
@@ -39,9 +41,10 @@ module.exports = {
     new webpack.DefinePlugin({
       'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'development'),
       // Use actual backend URL for cross-device access (mobile, etc.)
-      // Default to http://99.230.251.252:5001 for dev, :5000 for prod
+      // Default to http://99.230.251.252:5001 for dev (port 5001), :5000 for prod
+      // When accessing directly via backend (not webpack dev server), API_BASE_URL must be set
       'process.env.API_BASE_URL': JSON.stringify(
-        process.env.API_BASE_URL || backendUrl
+        process.env.API_BASE_URL || (isDev ? backendUrl : '')
       ),
     }),
     new HtmlWebpackPlugin({
@@ -74,6 +77,14 @@ module.exports = {
     hot: true,
     liveReload: false,
     historyApiFallback: true,
+    allowedHosts: [
+      'neonleon.ca',
+      'www.neonleon.ca',
+      '.neonleon.ca', // Allow all subdomains
+      'localhost',
+      '127.0.0.1',
+      '99.230.251.252', // Your public IP
+    ],
     client: {
       overlay: {
         errors: true,

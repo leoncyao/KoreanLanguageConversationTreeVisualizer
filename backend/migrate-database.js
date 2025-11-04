@@ -104,6 +104,18 @@ const migrations = `
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  -- Proper Nouns table: 고유명사
+  CREATE TABLE IF NOT EXISTS proper_nouns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    korean TEXT NOT NULL UNIQUE,
+    english TEXT,
+    romanization TEXT,
+    times_seen INTEGER DEFAULT 1,
+    times_correct INTEGER DEFAULT 0,
+    times_incorrect INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   -- Model sentence table: stores the current active model sentence (singleton)
   CREATE TABLE IF NOT EXISTS model_sentence (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -136,21 +148,49 @@ db.exec(migrations, (err) => {
       });
     }
     
-    // Check if phrase_words needs updating
-    db.all("PRAGMA table_info(phrase_words)", (err, columns) => {
-      if (err) {
-        console.error('Error checking phrase_words:', err);
-        db.close();
-        process.exit(1);
+    // Add tag columns to word tables if missing
+    const tagTables = ['nouns','verbs','adjectives','adverbs','pronouns','conjunctions','particles','proper_nouns'];
+    const ensureTagsForTable = (idx) => {
+      if (idx >= tagTables.length) {
+        // proceed to phrase_words check
+        checkPhraseWords();
+        return;
       }
-      
-      const hasWordType = columns.some(col => col.name === 'word_type');
-      
-      if (!hasWordType) {
-        console.log('\n🔧 Updating phrase_words table to add word_type column...');
-        
-        // SQLite requires recreating the table to add columns with constraints
-        const updateSQL = `
+      const table = tagTables[idx];
+      db.all(`PRAGMA table_info(${table})`, (e, cols) => {
+        if (e) {
+          console.error(`Error checking ${table}:`, e);
+          return ensureTagsForTable(idx + 1);
+        }
+        const names = cols.map(c => c.name);
+        const adds = [];
+        if (!names.includes('is_favorite')) adds.push(`ALTER TABLE ${table} ADD COLUMN is_favorite INTEGER DEFAULT 0`);
+        if (!names.includes('is_learning')) adds.push(`ALTER TABLE ${table} ADD COLUMN is_learning INTEGER DEFAULT 0`);
+        if (!names.includes('is_learned')) adds.push(`ALTER TABLE ${table} ADD COLUMN is_learned INTEGER DEFAULT 0`);
+        if (adds.length === 0) {
+          return ensureTagsForTable(idx + 1);
+        }
+        db.exec(adds.join(';
+') + ';', (ae) => {
+          if (ae) console.error(`Warning: could not add tag columns to ${table}:`, ae);
+          else console.log(`✅ Tag columns ensured for ${table}`);
+          ensureTagsForTable(idx + 1);
+        });
+      });
+    };
+
+    const checkPhraseWords = () => {
+      // Check if phrase_words needs updating
+      db.all("PRAGMA table_info(phrase_words)", (err, columns) => {
+        if (err) {
+          console.error('Error checking phrase_words:', err);
+          db.close();
+          process.exit(1);
+        }
+        const hasWordType = columns.some(col => col.name === 'word_type');
+        if (!hasWordType) {
+          console.log('\n🔧 Updating phrase_words table to add word_type column...');
+          const updateSQL = `
           CREATE TABLE IF NOT EXISTS phrase_words_new (
             phrase_id INTEGER,
             word_id INTEGER,
@@ -167,25 +207,27 @@ db.exec(migrations, (err) => {
           
           ALTER TABLE phrase_words_new RENAME TO phrase_words;
         `;
-        
-        db.exec(updateSQL, (err) => {
-          if (err) {
-            console.error('⚠️  Warning: Could not update phrase_words table:', err);
-          } else {
-            console.log('✅ phrase_words table updated');
-          }
-          
+          db.exec(updateSQL, (err2) => {
+            if (err2) {
+              console.error('⚠️  Warning: Could not update phrase_words table:', err2);
+            } else {
+              console.log('✅ phrase_words table updated');
+            }
+            console.log('\n🎉 Migration completed successfully!');
+            console.log('You can now restart your server.');
+            db.close();
+          });
+        } else {
+          console.log('✅ phrase_words table already up to date');
           console.log('\n🎉 Migration completed successfully!');
           console.log('You can now restart your server.');
           db.close();
-        });
-      } else {
-        console.log('✅ phrase_words table already up to date');
-        console.log('\n🎉 Migration completed successfully!');
-        console.log('You can now restart your server.');
-        db.close();
-      }
-    });
+        }
+      });
+    };
+
+    // start ensuring tags
+    ensureTagsForTable(0);
   });
 });
 

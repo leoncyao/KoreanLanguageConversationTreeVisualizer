@@ -1,0 +1,62 @@
+.grammar-page {
+  padding: 24px 20px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.grammar-header {
+  margin-bottom: 16px;
+}
+
+.grammar-title {
+  margin: 0 0 6px 0;
+  font-size: 28px;
+}
+
+.grammar-subtitle {
+  margin: 0 0 12px 0;
+  color: #6b7280;
+}
+
+.rules-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.rule-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.rule-title {
+  margin: 0 0 6px 0;
+  font-size: 18px;
+}
+
+.rule-desc {
+  margin: 0 0 8px 0;
+  color: #374151;
+}
+
+.rule-examples {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.rule-examples li {
+  margin: 4px 0;
+}
+
+.rule-examples .ko {
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+.rule-examples .en {
+  color: #6b7280;
+}
+
+

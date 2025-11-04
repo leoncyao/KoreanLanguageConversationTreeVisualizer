@@ -13,7 +13,7 @@ async function handleTranslate(req, res) {
     console.log('Input message:', inputText);
 
     const correctionPrompt = (
-      'Read the following user message. If the message is in english, return the translated version of the message, in korean polite casual form. '
+      'Read the following user message. If the message is in english, return the translated version of the message, in korean polite casual form. ALWAYS CASUAL, TRY TO MAKE SHORT IF POSSIBLE'
       + 'If the message is in korean, return just the english translation of the message '
       + 'ONLY RETURN EITHER THE TRANSLATED KOREAN, OR THE TRANSLATED ENGLISH, WITH NO EXPLANATION OR FURTHER TEXT'
       + 'User message: ' + inputText
@@ -79,6 +79,24 @@ async function handleTranslate(req, res) {
           const words = await parseKoreanSentence(corrected, inputText);
           console.log('Parsed words:', words);
           
+          const normalizePos = (pos, english) => {
+            const p = String(pos || '').trim().toLowerCase();
+            if (p === 'proper noun' || p === 'proper_noun' || p === 'propernoun') return 'proper-noun';
+            if (p === 'postposition' || p === 'preposition' || p === 'adposition') return 'particle';
+            if (p === 'adj') return 'adjective';
+            if (p === 'adv') return 'adverb';
+            if (p === 'pron') return 'pronoun';
+            if (p === 'conj') return 'conjunction';
+            if (p === 'v' || p === 'verb') return 'verb';
+            if (p === 'n' || p === 'noun') {
+              // Heuristic: capitalized English likely a proper noun (e.g., Vancouver)
+              const e = String(english || '').trim();
+              if (/^[A-Z][A-Za-z]*(?:[\-\s][A-Z][A-Za-z]*)*$/.test(e)) return 'proper-noun';
+              return 'noun';
+            }
+            return p || 'noun';
+          };
+
           // Save each word to the appropriate table
           for (const word of words) {
             try {
@@ -126,8 +144,9 @@ async function handleTranslate(req, res) {
                   wordData.particle_type = word.type;
                 }
                 
-                // Save word to appropriate table
-                await db.saveWord(word.pos, wordData);
+                // Normalize POS (handles proper-noun and synonyms) and save
+                const normalizedPos = normalizePos(word.pos, word.english);
+                await db.saveWord(normalizedPos, wordData);
               }
               
               // Note: linking words to phrases requires getting the word ID
