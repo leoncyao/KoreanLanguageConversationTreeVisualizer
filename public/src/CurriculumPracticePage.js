@@ -55,6 +55,7 @@ function CurriculumPracticePage() {
   const [usedPhraseIds, setUsedPhraseIds] = useState([]); // Track which phrases we've used
   const [allPhrases, setAllPhrases] = useState([]); // Store all curriculum phrases
   const [usingVariations, setUsingVariations] = useState(false); // Whether we're in variation mode
+  const [level, setLevel] = useState(1); // 1, 2, 3 -> number of blanks
 
   const createBlankPhrase = useCallback((phrase) => {
     if (!phrase) return { korean: '', blanks: [], translation: '', correct_answers: [] };
@@ -67,16 +68,21 @@ function CurriculumPracticePage() {
       blankIndices = [phrase.blank_word_index];
     }
     
+    // Apply level: ensure we have N blanks based on level; derive if missing
+    const desiredBlanks = Math.max(1, Math.min(3, Number(level) || 1));
     if (blankIndices.length === 0) {
-      // No blanks, show full sentence
-      return {
-        korean: phrase.korean_text,
-        blanks: [],
-        translation: phrase.english_text,
-        correct_answers: [],
-        id: phrase.id,
-        blankIndices: []
-      };
+      // Derive blanks by picking N indices from middle of the sentence (stable, not random)
+      const n = Math.min(desiredBlanks, Math.max(1, Math.floor(koreanWords.length / 3)));
+      const step = Math.max(1, Math.floor(koreanWords.length / (n + 1)));
+      const derived = [];
+      for (let i = 1; i <= n; i++) {
+        const idx = Math.min(koreanWords.length - 1, i * step);
+        if (!derived.includes(idx)) derived.push(idx);
+      }
+      blankIndices = derived;
+    } else {
+      // Respect existing blanks but cap to level
+      blankIndices = blankIndices.slice(0, desiredBlanks);
     }
 
     // Sort indices in descending order to replace from end to start
@@ -760,6 +766,14 @@ Keep it concise and structured, focusing on helping someone understand how the s
               ✓ All curriculum phrases completed! Now practicing with AI variations.
             </p>
           )}
+          <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <label style={{ fontSize: 12, color: '#666', fontWeight: 600 }}>Level</label>
+            <select value={level} onChange={(e)=>setLevel(parseInt(e.target.value || '1', 10))} style={{ padding: 4, border: '1px solid #ddd', borderRadius: 4 }}>
+              <option value={1}>1 (one blank)</option>
+              <option value={2}>2 (two blanks)</option>
+              <option value={3}>3 (three blanks)</option>
+            </select>
+          </div>
         </div>
       )}
       <p className="korean-sentence">

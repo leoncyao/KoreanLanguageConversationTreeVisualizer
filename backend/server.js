@@ -13,7 +13,7 @@ const { handleChat } = require('./chat');
 const { handleGetSentences, handleCorrectSentence } = require('./sentences');
 const { handleTranslate } = require('./translate');
 const { handleGenerateVariations } = require('./generate');
-const { handleTTS } = require('./tts');
+const { handleTTS, handleTTSBatch } = require('./tts');
 const {
   handleGetCurriculumPhrases,
   handleGetRandomCurriculumPhrase,
@@ -93,6 +93,68 @@ app.post('/api/sentences/:id/correct', handleCorrectSentence);
 app.post('/api/translate', handleTranslate);
 app.post('/api/generate-variations', handleGenerateVariations);
 app.post('/api/tts', handleTTS);
+app.post('/api/tts/batch', handleTTSBatch);
+
+// Lightweight health check
+app.get('/api/health', (req, res) => {
+  res.json({
+    ok: true,
+    uptime: process.uptime(),
+    time: new Date().toISOString()
+  });
+});
+
+// Journal API routes
+app.post('/api/journal', async (req, res) => {
+  try {
+    const { date, english_text, korean_text } = req.body || {};
+    const hasKorean = typeof korean_text === 'string' && korean_text.trim().length > 0;
+    const hasEnglish = typeof english_text === 'string' && english_text.trim().length > 0;
+    if (!hasKorean && !hasEnglish) {
+      return res.status(400).json({ error: 'At least one of english_text or korean_text is required' });
+    }
+
+    // Compute YYYY-MM-DD (prefer client-provided date if valid)
+    const toDateString = (d) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+    const entryDate = (typeof date === 'string' && /\d{4}-\d{2}-\d{2}/.test(date)) ? date : toDateString(new Date());
+
+    const id = await db.addJournalEntry(entryDate, hasEnglish ? english_text.trim() : null, hasKorean ? korean_text.trim() : null);
+    res.json({ success: true, id, entry_date: entryDate });
+  } catch (error) {
+    console.error('Error saving journal entry:', error);
+    res.status(500).json({ error: 'Failed to save journal entry' });
+  }
+});
+
+app.get('/api/journal', async (req, res) => {
+  try {
+    const date = req.query.date;
+    if (!date || !/\d{4}-\d{2}-\d{2}/.test(date)) {
+      return res.status(400).json({ error: 'date query param required as YYYY-MM-DD' });
+    }
+    const entries = await db.getJournalEntriesByDate(date);
+    res.json(entries);
+  } catch (error) {
+    console.error('Error fetching journal entries:', error);
+    res.status(500).json({ error: 'Failed to fetch journal entries' });
+  }
+});
+
+app.get('/api/journal/days', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 60;
+    const days = await db.getJournalDays(limit);
+    res.json(days);
+  } catch (error) {
+    console.error('Error fetching journal days:', error);
+    res.status(500).json({ error: 'Failed to fetch journal days' });
+  }
+});
 
 // Database API routes
 app.get('/api/phrases', async (req, res) => {

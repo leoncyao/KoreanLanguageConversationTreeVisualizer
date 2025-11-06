@@ -56,4 +56,7 @@ dist/
 backend/ssl/*.pem
 backend/ssl/*.key
 backend/ssl/*.crt
-!backend/ssl/.gitkeep 
+!backend/ssl/.gitkeep
+
+# TTS cache (generated MP3 files)
+public/tts-cache/ 

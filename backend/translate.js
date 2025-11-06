@@ -82,11 +82,11 @@ async function handleTranslate(req, res) {
           const normalizePos = (pos, english) => {
             const p = String(pos || '').trim().toLowerCase();
             if (p === 'proper noun' || p === 'proper_noun' || p === 'propernoun') return 'proper-noun';
-            if (p === 'postposition' || p === 'preposition' || p === 'adposition') return 'particle';
-            if (p === 'adj') return 'adjective';
-            if (p === 'adv') return 'adverb';
-            if (p === 'pron') return 'pronoun';
-            if (p === 'conj') return 'conjunction';
+            if (p === 'postposition' || p === 'preposition' || p === 'adposition' || p === 'particle') return 'particle';
+            if (p === 'adj' || p === 'adjective') return 'adjective';
+            if (p === 'adv' || p === 'adverb') return 'adverb';
+            if (p === 'pron' || p === 'pronoun') return 'pronoun';
+            if (p === 'conj' || p === 'conjunction') return 'conjunction';
             if (p === 'v' || p === 'verb') return 'verb';
             if (p === 'n' || p === 'noun') {
               // Heuristic: capitalized English likely a proper noun (e.g., Vancouver)
@@ -97,11 +97,40 @@ async function handleTranslate(req, res) {
             return p || 'noun';
           };
 
-          // Save each word to the appropriate table
+          // Extract a normalized set of POS tags when a token can be multiple (e.g., "noun, verb")
+          const extractNormalizedPosSet = (rawPos, english) => {
+            const set = new Set();
+            if (!rawPos && rawPos !== 0) return set;
+            if (Array.isArray(rawPos)) {
+              for (const p of rawPos) {
+                const n = normalizePos(p, english);
+                if (n) set.add(n);
+              }
+              return set;
+            }
+            const raw = String(rawPos || '').toLowerCase();
+            // Split on common separators or detect tokens in a space-separated string
+            const parts = raw.split(/[\s,|/]+/).filter(Boolean);
+            if (parts.length === 0) {
+              const n = normalizePos(raw, english);
+              if (n) set.add(n);
+              return set;
+            }
+            for (const p of parts) {
+              const n = normalizePos(p, english);
+              if (n) set.add(n);
+            }
+            return set;
+          };
+
+          // Save each word to the appropriate table(s) — supports multi-POS (e.g., noun AND verb)
           for (const word of words) {
             try {
-              // Special handling for verbs - generate all tenses
-              if (word.pos === 'verb') {
+              const posSet = extractNormalizedPosSet(word.pos, word.english);
+              const savedTables = new Set();
+
+              // If word has a verb sense, save full verb tenses
+              if (posSet.has('verb')) {
                 try {
                   console.log(`Generating all tenses for verb: ${word.korean}`);
                   const verbTenses = await generateVerbTenses(
@@ -109,9 +138,8 @@ async function handleTranslate(req, res) {
                     word.english,
                     word.korean
                   );
-                  
-                  // Save verb with all its conjugations
                   await db.saveVerbWithAllTenses(verbTenses);
+                  savedTables.add('verb');
                   console.log(`Saved verb with all tenses: ${verbTenses.base_form}`);
                 } catch (verbError) {
                   console.error(`Failed to generate verb tenses for ${word.korean}:`, verbError);
@@ -123,30 +151,34 @@ async function handleTranslate(req, res) {
                     base_form: word.base_form,
                     conjugation_type: word.type
                   };
-                  await db.saveWord('verb', wordData);
+                  try { await db.saveWord('verb', wordData); savedTables.add('verb'); } catch (_) {}
                 }
-              } else {
-                // For non-verbs, use existing logic
+              }
+
+              // Save other POS senses (including noun) for the same token
+              for (const pos of posSet) {
+                if (pos === 'verb') continue; // already handled
+                if (savedTables.has(pos)) continue;
                 const wordData = {
                   korean: word.korean,
                   english: word.english,
                   romanization: word.romanization
                 };
-                
-                // Add type-specific fields
-                if (word.pos === 'adjective') {
+                if (pos === 'adjective') {
                   wordData.base_form = word.base_form;
                 }
-                if (word.pos === 'pronoun') {
+                if (pos === 'pronoun') {
                   wordData.pronoun_type = word.type;
                 }
-                if (word.pos === 'particle') {
+                if (pos === 'particle') {
                   wordData.particle_type = word.type;
                 }
-                
-                // Normalize POS (handles proper-noun and synonyms) and save
-                const normalizedPos = normalizePos(word.pos, word.english);
-                await db.saveWord(normalizedPos, wordData);
+                try {
+                  await db.saveWord(pos, wordData);
+                  savedTables.add(pos);
+                } catch (saveWordErr) {
+                  console.error(`Failed to save POS=${pos} for ${word.korean}:`, saveWordErr);
+                }
               }
               
               // Note: linking words to phrases requires getting the word ID

@@ -147,6 +147,7 @@ function StatsPage() {
                   <th>Learning</th>
                   <th>Learned</th>
                   <th>Correct</th>
+                  <th>First Try</th>
                   <th>Seen</th>
                 </tr>
               </thead>
@@ -168,6 +169,7 @@ function StatsPage() {
                       <td><input type="checkbox" checked={!!w.is_learning} onChange={(e) => handleToggleTag('verb', base, 'is_learning', e.target.checked)} /></td>
                       <td><input type="checkbox" checked={!!w.is_learned} onChange={(e) => handleToggleTag('verb', base, 'is_learned', e.target.checked)} /></td>
                       <td className="metric">{w.times_correct || 0}</td>
+                      <td className="metric">{w.first_try_correct || 0}</td>
                       <td className="metric">{w.times_seen || 0}</td>
                     </tr>
                   );
@@ -194,6 +196,7 @@ function StatsPage() {
                 <th>Learning</th>
                 <th>Learned</th>
                 <th>Correct</th>
+                <th>First Try</th>
                 <th>Seen</th>
               </tr>
             </thead>
@@ -209,6 +212,7 @@ function StatsPage() {
                     <td><input type="checkbox" checked={!!w.is_learning} onChange={(e) => handleToggleTag(typeKey, koreanValue, 'is_learning', e.target.checked)} /></td>
                     <td><input type="checkbox" checked={!!w.is_learned} onChange={(e) => handleToggleTag(typeKey, koreanValue, 'is_learned', e.target.checked)} /></td>
                     <td className="metric">{w.times_correct || 0}</td>
+                    <td className="metric">{w.first_try_correct || 0}</td>
                     <td className="metric">{w.times_seen || 0}</td>
                   </tr>
                 );
@@ -320,6 +324,7 @@ function StatsPage() {
                     <th>Learning</th>
                     <th>Learned</th>
                     <th>Correct</th>
+                    <th>First Try</th>
                     <th>Seen</th>
                   </tr>
                 </thead>
@@ -336,6 +341,7 @@ function StatsPage() {
                         <td><input type="checkbox" checked={!!w.is_learning} onChange={(e) => handleToggleTag(w.__type, koreanValue, 'is_learning', e.target.checked)} /></td>
                         <td><input type="checkbox" checked={!!w.is_learned} onChange={(e) => handleToggleTag(w.__type, koreanValue, 'is_learned', e.target.checked)} /></td>
                         <td className="metric">{w.times_correct || 0}</td>
+                        <td className="metric">{w.first_try_correct || 0}</td>
                         <td className="metric">{w.times_seen || 0}</td>
                       </tr>
                     );

@@ -8,6 +8,7 @@ import {
   updateMediaSession,
   ensureAudioContextActive,
 } from './backgroundAudio';
+import { speakToAudio, cleanupAudioCache } from './audioTTS';
 
 function buildSinoNumbers(start = 0, end = 100) {
   const digit = ['영','일','이','삼','사','오','육','칠','팔','구'];
@@ -83,40 +84,8 @@ const PRESETS = {
 
 // (custom list and generator features removed)
 
-async function speak(text, lang = 'ko-KR', rate = 0.9) {
-  try {
-    if (!text || window.__APP_MUTED__ === true) return Promise.resolve();
-    const synth = window.speechSynthesis;
-    if (!synth) return Promise.resolve();
-    
-    // Ensure audio context and wake lock are active BEFORE speaking
-    await ensureAudioContextActive();
-    await requestWakeLock();
-    
-    synth.cancel();
-    const globalSpeed = window.__APP_SPEECH_SPEED__ || 1.0;
-    
-    // Update MediaSession for background playback
-    updateMediaSession(text.substring(0, 50), lang === 'ko-KR' ? 'Korean' : 'English', true);
-    
-    return new Promise((resolve) => {
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = lang;
-      u.rate = rate * globalSpeed;
-      u.onstart = async () => {
-        // Ensure wake lock is active during playback
-        await requestWakeLock();
-        // Keep audio context active
-        await ensureAudioContextActive();
-      };
-      u.onend = () => resolve();
-      u.onerror = () => resolve();
-      synth.speak(u);
-    });
-  } catch (_) {
-    return Promise.resolve();
-  }
-}
+// Use speakToAudio for background playback support (HTML5 Audio + MediaSession)
+const speak = speakToAudio;
 
 function AudioLearningPage() {
   const [presetKey, setPresetKey] = React.useState(Object.keys(PRESETS)[0]);
@@ -124,6 +93,7 @@ function AudioLearningPage() {
   const [isPlaying, setIsPlaying] = React.useState(false);
   const playingRef = React.useRef(false);
   const [koRate, setKoRate] = React.useState(0.9);
+  const [pairDelayMs, setPairDelayMs] = React.useState(300);
 
   React.useEffect(() => {
     setItems(PRESETS[presetKey]);
@@ -134,8 +104,11 @@ function AudioLearningPage() {
   const handlePlayOne = React.useCallback(async (pair) => {
     if (!pair) return;
     await speak(pair.ko, 'ko-KR', koRate);
+    if (pairDelayMs > 0) {
+      await new Promise(r => setTimeout(r, Math.max(0, Number(pairDelayMs) || 0)));
+    }
     await speak(pair.en, 'en-US', 1.0);
-  }, [koRate]);
+  }, [koRate, pairDelayMs]);
 
   const handlePlayAll = React.useCallback(async () => {
     if (!items || items.length === 0) return;
@@ -186,6 +159,7 @@ function AudioLearningPage() {
     setIsPlaying(false);
     updateMediaSession('Audio Learning', '', false);
     try { const s = window.speechSynthesis; if (s) s.cancel(); } catch (_) {}
+    try { cleanupAudioCache(); } catch (_) {}
     // Release wake lock when stopping
     await releaseWakeLock();
     // Stop keep-alive
@@ -220,6 +194,11 @@ function AudioLearningPage() {
                 <span style={{ fontSize: 12, fontWeight: 600 }}>Korean speed</span>
                 <input type="range" min={0.6} max={1.2} step={0.05} value={koRate} onChange={(e)=>setKoRate(parseFloat(e.target.value||'0.9'))} />
                 <span style={{ fontSize: 12 }}>{koRate.toFixed(2)}x</span>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>Delay K→E</span>
+                <input type="range" min={0} max={1500} step={50} value={pairDelayMs} onChange={(e)=>setPairDelayMs(parseInt(e.target.value||'0',10))} />
+                <span style={{ fontSize: 12 }}>{pairDelayMs} ms</span>
               </label>
             </div>
             <div className="audio-list">

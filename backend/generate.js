@@ -27,30 +27,29 @@ async function handleGenerateVariations(req, res) {
 
     const prompt = `Given this Korean model sentence: "${korean}" (English: "${english}")${learningLine}
 
-Generate 5 similar sentence variations in Korean that are CLOSELY RELATED to the model sentence:
+Generate 5 diverse sentence variations in Korean that are NATURAL and CLEARLY DIFFERENT from the model:
 
-Requirements:
-1. Use Similar grammar structure and sentence pattern, can vary tense. 
-2. Vary Subject, Object, Adjectives, Adverbs, etc. Only care about grammatical structure, can vary order and grammar if not too much
-3. Keep the SAME level of formality always prefer casual
-4. Keep SIMILAR sentence length and complexity
-5. Make sentences that feel like natural practice variations of the model
-6. If the model uses specific verb tenses or particles, use the same ones
-7. Prefer to incorporate 1-2 of the target learning words when it sounds natural and stays close to the model
-8. Try to vary cosonant and vowel endings on words
+Strong requirements for DIVERSITY:
+1) Change the main verb in MOST variations (avoid repeating the model's verb). Use different actions (e.g., buy, lose, find, lend, borrow, carry, need, want, can, must, etc.).
+2) Replace core nouns with DIFFERENT categories (not trivial synonyms). If the model mentions book/pen, use unrelated objects (e.g., ticket, backpack, umbrella, camera, invitation, homework, appointment, bus, dinner, gym).
+3) Vary tense/aspect/polarity across the 5 outputs: include a mix of present, past, future, progressive (하고 있어요), and at least one negative. Keep polite casual endings (해요/했어요/할 거예요/하고 있어요/안/못 + V) throughout.
+4) Keep sentence length and complexity roughly similar, but vary particles and word order naturally.
+5) Avoid reusing the model's specific content words (beyond particles), and avoid near-synonyms that are too similar (e.g., 'notebook' vs 'book').
+6) Prefer to incorporate 1-2 target learning words only when it stays natural; otherwise ignore them.
+7) Try to vary consonant and vowel endings across words.
 
-Examples of good variations:
+Examples of acceptable variation (conceptual):
 Model: "나는 학생이에요" (I am a student)
-Good variations:
-- "나는 선생님이에요" (I am a teacher)
-- "저는 의사예요" (I am a doctor) 
-- "나는 간호사예요" (I am a nurse)
+Acceptable: 
+- "저는 선생님이었어요" (I was a teacher)  // different noun + tense
+- "저는 의사가 될 거예요" (I will become a doctor)  // different verb
+- "저는 회사원은 아니에요" (I am not an office worker)  // negative
 
 Model: "저는 커피를 좋아해요" (I like coffee)
-Good variations:
-- "저는 차를 좋아해요" (I like tea)
-- "저는 음악을 좋아해요" (I like music)
-- "저는 영화를 좋아해요" (I like movies)
+Acceptable:
+- "저는 차를 마셨어요" (I drank tea)  // different verb + past
+- "저는 간식을 안 먹어요" (I don't eat snacks)  // negative
+- "저는 운동을 하고 있어요" (I am working out)  // progressive
 
 Now generate 5 variations for: "${korean}"
 
@@ -76,7 +75,7 @@ Only respond with the JSON array, nothing else.`;
       messages: [
         { role: 'user', content: prompt }
       ],
-      temperature: 0.8, // Higher temperature for more creative variations
+      temperature: 1.1, // Encourage more diverse outputs
     };
 
     let timer;

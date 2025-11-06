@@ -101,7 +101,19 @@ export const api = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ correct })
-  })
+  }),
+
+  // Journal API
+  saveJournalEntry: (englishText, koreanText, date) => fetch(`${API_BASE_URL}/api/journal`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ english_text: englishText, korean_text: koreanText, date })
+  }),
+  getJournalDays: (limit = 60) => fetch(`${API_BASE_URL}/api/journal/days?limit=${limit}`),
+  getJournalEntriesByDate: (date) => fetch(`${API_BASE_URL}/api/journal?date=${encodeURIComponent(date)}`),
+  
+  // Health
+  health: () => fetch(`${API_BASE_URL}/api/health`)
 };
 
 

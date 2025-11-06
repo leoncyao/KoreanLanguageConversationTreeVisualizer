@@ -68,7 +68,11 @@ module.exports = {
       directory: path.resolve(__dirname, 'public'),
       publicPath: '/',
       watch: {
-        ignored: [path.resolve(__dirname, 'public/data/sentences.json')],
+        ignored: [
+          path.resolve(__dirname, 'public/data/sentences.json'),
+          path.resolve(__dirname, 'public/tts-cache/**/*'),
+          path.resolve(__dirname, 'public/static/**/*'),
+        ],
       },
     },
     host: '0.0.0.0', // Listen on all network interfaces for mobile access
@@ -91,9 +95,10 @@ module.exports = {
         warnings: false,
       },
       progress: true,
+      reconnect: 0,
     },
     watchFiles: {
-      paths: ['public/**/*', 'src/**/*'],
+      paths: ['src/**/*', 'public/index.html', 'public/manifest.json'],
       options: {
         usePolling: false,
       },

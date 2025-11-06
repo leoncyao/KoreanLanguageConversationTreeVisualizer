@@ -195,6 +195,42 @@ Format the response clearly and structured, using markdown if helpful.`;
     return null; // Unknown
   }, []);
 
+  // Auto-select blanks after translation from English → Korean
+  const autoSelectBlanks = useCallback((koreanText, grammarBreakdown) => {
+    const particles = ['은', '는', '이', '가', '을', '를', '에', '에서', '으로', '로', '와', '과', '의', '도', '만', '부터', '까지'];
+    const words = String(koreanText || '').trim().split(' ').filter(w => w);
+    if (words.length === 0) return { indices: [], answers: [], types: [] };
+
+    const isParticle = (w) => particles.includes(w.trim());
+
+    // Build candidate list excluding particles and trivial short tokens
+    const candidates = words
+      .map((w, i) => ({ w, i }))
+      .filter(({ w }) => !isParticle(w) && w.length > 1);
+
+    if (candidates.length === 0) return { indices: [], answers: [], types: [] };
+
+    // Choose up to 3 spaced-out indices: first, middle, last (favoring the last as verb slot)
+    const pick = [];
+    const lastIdx = candidates[candidates.length - 1].i;
+    pick.push(lastIdx);
+    if (candidates.length > 1) {
+      pick.push(candidates[0].i);
+    }
+    if (candidates.length > 2) {
+      const mid = candidates[Math.floor(candidates.length / 2)].i;
+      if (!pick.includes(mid)) pick.push(mid);
+    }
+
+    // De-duplicate and sort ascending
+    const indices = Array.from(new Set(pick)).sort((a, b) => a - b);
+    const answers = indices.map(idx => words[idx]);
+    const types = indices.map(idx => detectWordType(words[idx], grammarBreakdown, words, idx) || null);
+    return { indices, answers, types };
+  }, [detectWordType]);
+
+  
+
   const handleKoreanChange = useCallback((value) => {
     setNewPhrase({ ...newPhrase, korean_text: value });
   }, [newPhrase]);
@@ -208,30 +244,40 @@ Format the response clearly and structured, using markdown if helpful.`;
       e.preventDefault();
       const translated = await translateText(newPhrase.korean_text, 'en');
       if (translated) {
-        setNewPhrase(prev => ({ ...prev, english_text: translated }));
-        // Auto-analyze grammar after translation
+        // Analyze grammar of the existing Korean text
         const breakdown = await analyzeGrammar(newPhrase.korean_text, translated);
-        if (breakdown) {
-          setNewPhrase(prev => ({ ...prev, grammar_breakdown: breakdown }));
-        }
+        const { indices, answers, types } = autoSelectBlanks(newPhrase.korean_text, breakdown);
+        setNewPhrase(prev => ({
+          ...prev,
+          english_text: translated,
+          grammar_breakdown: breakdown,
+          blank_word_indices: indices,
+          correct_answers: answers,
+          blank_word_types: types
+        }));
       }
     }
-  }, [newPhrase.korean_text, newPhrase.english_text, translateText, analyzeGrammar]);
+  }, [newPhrase.korean_text, newPhrase.english_text, translateText, analyzeGrammar, autoSelectBlanks]);
 
   const handleEnglishKeyDown = useCallback(async (e) => {
     if (e.key === 'Enter' && newPhrase.english_text && !newPhrase.korean_text) {
       e.preventDefault();
       const translated = await translateText(newPhrase.english_text, 'ko');
       if (translated) {
-        setNewPhrase(prev => ({ ...prev, korean_text: translated }));
-        // Auto-analyze grammar after translation
+        // Auto-analyze grammar and select blanks
         const breakdown = await analyzeGrammar(translated, newPhrase.english_text);
-        if (breakdown) {
-          setNewPhrase(prev => ({ ...prev, grammar_breakdown: breakdown }));
-        }
+        const { indices, answers, types } = autoSelectBlanks(translated, breakdown);
+        setNewPhrase(prev => ({
+          ...prev,
+          korean_text: translated,
+          grammar_breakdown: breakdown,
+          blank_word_indices: indices,
+          correct_answers: answers,
+          blank_word_types: types
+        }));
       }
     }
-  }, [newPhrase.korean_text, newPhrase.english_text, translateText, analyzeGrammar]);
+  }, [newPhrase.korean_text, newPhrase.english_text, translateText, analyzeGrammar, autoSelectBlanks]);
 
   const toggleBlankWord = useCallback((index) => {
     setNewPhrase(prev => {
@@ -427,12 +473,16 @@ Format the response clearly and structured, using markdown if helpful.`;
                     if (newPhrase.korean_text && !newPhrase.english_text) {
                       const translated = await translateText(newPhrase.korean_text, 'en');
                       if (translated) {
-                        setNewPhrase(prev => ({ ...prev, english_text: translated }));
-                        // Auto-analyze grammar after translation
                         const breakdown = await analyzeGrammar(newPhrase.korean_text, translated);
-                        if (breakdown) {
-                          setNewPhrase(prev => ({ ...prev, grammar_breakdown: breakdown }));
-                        }
+                        const { indices, answers, types } = autoSelectBlanks(newPhrase.korean_text, breakdown);
+                        setNewPhrase(prev => ({
+                          ...prev,
+                          english_text: translated,
+                          grammar_breakdown: breakdown,
+                          blank_word_indices: indices,
+                          correct_answers: answers,
+                          blank_word_types: types
+                        }));
                       }
                     }
                   }}
@@ -462,12 +512,16 @@ Format the response clearly and structured, using markdown if helpful.`;
                     if (newPhrase.english_text && !newPhrase.korean_text) {
                       const translated = await translateText(newPhrase.english_text, 'ko');
                       if (translated) {
-                        setNewPhrase(prev => ({ ...prev, korean_text: translated }));
-                        // Auto-analyze grammar after translation
                         const breakdown = await analyzeGrammar(translated, newPhrase.english_text);
-                        if (breakdown) {
-                          setNewPhrase(prev => ({ ...prev, grammar_breakdown: breakdown }));
-                        }
+                        const { indices, answers, types } = autoSelectBlanks(translated, breakdown);
+                        setNewPhrase(prev => ({
+                          ...prev,
+                          korean_text: translated,
+                          grammar_breakdown: breakdown,
+                          blank_word_indices: indices,
+                          correct_answers: answers,
+                          blank_word_types: types
+                        }));
                       }
                     }
                   }}

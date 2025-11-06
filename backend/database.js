@@ -55,6 +55,7 @@ class Database {
           romanization TEXT,
           times_seen INTEGER DEFAULT 1,
           times_correct INTEGER DEFAULT 0,
+          first_try_correct INTEGER DEFAULT 0,
           times_incorrect INTEGER DEFAULT 0,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
@@ -69,6 +70,7 @@ class Database {
           conjugation_type TEXT,
           times_seen INTEGER DEFAULT 1,
           times_correct INTEGER DEFAULT 0,
+          first_try_correct INTEGER DEFAULT 0,
           times_incorrect INTEGER DEFAULT 0,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
@@ -82,6 +84,7 @@ class Database {
           base_form TEXT,
           times_seen INTEGER DEFAULT 1,
           times_correct INTEGER DEFAULT 0,
+          first_try_correct INTEGER DEFAULT 0,
           times_incorrect INTEGER DEFAULT 0,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
@@ -94,6 +97,7 @@ class Database {
           romanization TEXT,
           times_seen INTEGER DEFAULT 1,
           times_correct INTEGER DEFAULT 0,
+          first_try_correct INTEGER DEFAULT 0,
           times_incorrect INTEGER DEFAULT 0,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
@@ -107,6 +111,7 @@ class Database {
           pronoun_type TEXT,
           times_seen INTEGER DEFAULT 1,
           times_correct INTEGER DEFAULT 0,
+          first_try_correct INTEGER DEFAULT 0,
           times_incorrect INTEGER DEFAULT 0,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
@@ -119,6 +124,7 @@ class Database {
           romanization TEXT,
           times_seen INTEGER DEFAULT 1,
           times_correct INTEGER DEFAULT 0,
+          first_try_correct INTEGER DEFAULT 0,
           times_incorrect INTEGER DEFAULT 0,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
@@ -132,6 +138,7 @@ class Database {
           particle_type TEXT,
           times_seen INTEGER DEFAULT 1,
           times_correct INTEGER DEFAULT 0,
+          first_try_correct INTEGER DEFAULT 0,
           times_incorrect INTEGER DEFAULT 0,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
@@ -144,6 +151,7 @@ class Database {
           romanization TEXT,
           times_seen INTEGER DEFAULT 1,
           times_correct INTEGER DEFAULT 0,
+          first_try_correct INTEGER DEFAULT 0,
           times_incorrect INTEGER DEFAULT 0,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
@@ -208,6 +216,16 @@ class Database {
           word_type TEXT,
           FOREIGN KEY (phrase_id) REFERENCES curriculum_phrases(id) ON DELETE CASCADE
         );
+
+        -- Journal entries table
+        CREATE TABLE IF NOT EXISTS journal_entries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entry_date TEXT NOT NULL,
+          english_text TEXT,
+          korean_text TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_journal_entries_date ON journal_entries(entry_date);
       `;
 
       this.db.exec(createTablesSQL, (err) => {
@@ -226,6 +244,51 @@ class Database {
               resolve();
             });
         }
+      });
+    });
+  }
+
+  // Journal methods
+  async addJournalEntry(entryDate, englishText, koreanText) {
+    return new Promise((resolve, reject) => {
+      const sql = `
+        INSERT INTO journal_entries (entry_date, english_text, korean_text)
+        VALUES (?, ?, ?)
+      `;
+      this.db.run(sql, [entryDate, englishText || null, koreanText], function(err) {
+        if (err) return reject(err);
+        resolve(this.lastID);
+      });
+    });
+  }
+
+  async getJournalEntriesByDate(entryDate) {
+    return new Promise((resolve, reject) => {
+      const sql = `
+        SELECT id, entry_date, english_text, korean_text, created_at
+        FROM journal_entries
+        WHERE entry_date = ?
+        ORDER BY created_at DESC, id DESC
+      `;
+      this.db.all(sql, [entryDate], (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      });
+    });
+  }
+
+  async getJournalDays(limit = 60) {
+    return new Promise((resolve, reject) => {
+      const sql = `
+        SELECT entry_date AS date, COUNT(1) AS count
+        FROM journal_entries
+        GROUP BY entry_date
+        ORDER BY entry_date DESC
+        LIMIT ?
+      `;
+      this.db.all(sql, [limit], (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
       });
     });
   }
@@ -621,6 +684,11 @@ class Database {
         placeholders.push('?');
       }
 
+      // Mark new inserts as learning by default
+      columns.push('is_learning');
+      values.push(1);
+      placeholders.push('?');
+
       const sql = `
         INSERT INTO ${tableName} (${columns.join(', ')})
         VALUES (${placeholders.join(', ')})
@@ -682,6 +750,11 @@ class Database {
           }
         }
       });
+
+      // Mark new inserts as learning by default (do not force on update)
+      columns.push('is_learning');
+      values.push(1);
+      placeholders.push('?');
 
       updateFields.push('times_seen = times_seen + 1');
       updateFields.push('last_updated = CURRENT_TIMESTAMP');
@@ -1011,6 +1084,7 @@ class Database {
           if (!names.includes('is_favorite')) stmts.push(`ALTER TABLE ${table} ADD COLUMN is_favorite INTEGER DEFAULT 0`);
           if (!names.includes('is_learning')) stmts.push(`ALTER TABLE ${table} ADD COLUMN is_learning INTEGER DEFAULT 0`);
           if (!names.includes('is_learned')) stmts.push(`ALTER TABLE ${table} ADD COLUMN is_learned INTEGER DEFAULT 0`);
+          if (!names.includes('first_try_correct')) stmts.push(`ALTER TABLE ${table} ADD COLUMN first_try_correct INTEGER DEFAULT 0`);
           if (stmts.length === 0) return addForIndex(idx + 1);
           this.db.exec(stmts.join(';\n') + ';', (e) => {
             if (e) return reject(e);
@@ -1108,7 +1182,7 @@ class Database {
         }
 
         const { table, key } = tables[index];
-        const sql = `UPDATE ${table} SET times_correct = times_correct + 1, times_seen = times_seen + 1 WHERE ${key} = ?`;
+        const sql = `UPDATE ${table} SET times_correct = times_correct + 1, first_try_correct = first_try_correct + 1, times_seen = times_seen + 1 WHERE ${key} = ?`;
         this.db.run(sql, [koreanWord], function(err) {
           if (err) {
             return reject(err);
