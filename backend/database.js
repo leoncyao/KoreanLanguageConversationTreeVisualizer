@@ -934,14 +934,17 @@ class Database {
   async getLearningWords(limit = 50) {
     return new Promise((resolve, reject) => {
       const sql = `
-        SELECT 'noun' AS type, korean AS korean, english FROM nouns WHERE is_learning = 1
-        UNION ALL SELECT 'proper-noun', korean, english FROM proper_nouns WHERE is_learning = 1
-        UNION ALL SELECT 'verb', base_form AS korean, english FROM verbs WHERE is_learning = 1
-        UNION ALL SELECT 'adjective', korean, english FROM adjectives WHERE is_learning = 1
-        UNION ALL SELECT 'adverb', korean, english FROM adverbs WHERE is_learning = 1
-        UNION ALL SELECT 'pronoun', korean, english FROM pronouns WHERE is_learning = 1
-        UNION ALL SELECT 'conjunction', korean, english FROM conjunctions WHERE is_learning = 1
-        UNION ALL SELECT 'particle', korean, english FROM particles WHERE is_learning = 1
+        SELECT * FROM (
+          SELECT 'noun' AS type, korean AS korean, english, created_at FROM nouns WHERE is_learning = 1
+          UNION ALL SELECT 'proper-noun', korean, english, created_at FROM proper_nouns WHERE is_learning = 1
+          UNION ALL SELECT 'verb', base_form AS korean, english, created_at FROM verbs WHERE is_learning = 1
+          UNION ALL SELECT 'adjective', korean, english, created_at FROM adjectives WHERE is_learning = 1
+          UNION ALL SELECT 'adverb', korean, english, created_at FROM adverbs WHERE is_learning = 1
+          UNION ALL SELECT 'pronoun', korean, english, created_at FROM pronouns WHERE is_learning = 1
+          UNION ALL SELECT 'conjunction', korean, english, created_at FROM conjunctions WHERE is_learning = 1
+          UNION ALL SELECT 'particle', korean, english, created_at FROM particles WHERE is_learning = 1
+        ) t
+        ORDER BY datetime(COALESCE(created_at, '1970-01-01')) ASC
         LIMIT ?
       `;
       this.db.all(sql, [limit], (err, rows) => {

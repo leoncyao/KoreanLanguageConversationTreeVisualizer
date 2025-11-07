@@ -48,6 +48,9 @@ function LearningModesPage() {
   const [currentSetWords, setCurrentSetWords] = React.useState([]); // words currently used in loop
   const [loopGenerating, setLoopGenerating] = React.useState(false);
   const [loopProgress, setLoopProgress] = React.useState(0);
+  // Hands-free word set selection (date-sorted from backend)
+  const [setIndex, setSetIndex] = React.useState(1); // 1-based
+  const [randomizeSet, setRandomizeSet] = React.useState(false);
   const [showConjugations, setShowConjugations] = React.useState(false);
 
   // Saved sets (local only)
@@ -251,6 +254,48 @@ function LearningModesPage() {
     return out;
   };
 
+  const parseJsonArraySafe = (text) => {
+    if (!text) return [];
+    const m = String(text).match(/\[[\s\S]*\]/);
+    if (!m) return [];
+    try { const arr = JSON.parse(m[0]); return Array.isArray(arr) ? arr : []; } catch (_) { return []; }
+  };
+
+  // Fetch one curriculum sentence (EN/KR)
+  const getCurriculumSentence = React.useCallback(async () => {
+    try {
+      const res = await api.getRandomCurriculumPhrase();
+      if (!res.ok) return null;
+      const p = await res.json();
+      const english = String(p && (p.english_text || p.english || '') || '').trim();
+      const korean = String(p && (p.korean_text || p.korean || '') || '').trim();
+      if (!english || !korean) return null;
+      return { english, korean };
+    } catch (_) {
+      return null;
+    }
+  }, []);
+
+  // Get word-by-word explanation pairs using chat (fallback to simple split)
+  const getWordByWordPairs = React.useCallback(async (english, korean) => {
+    try {
+      const prompt = `Return ONLY a JSON array of objects each like {"ko":"…","en":"…"} that maps each token in this Korean sentence to a concise English gloss. Keep array in Korean word order and cover every token.
+Korean: ${korean}
+English: ${english}`;
+      const res = await api.chat(prompt);
+      const data = await res.json().catch(() => null);
+      const arr = parseJsonArraySafe(data && (data.response || ''));
+      const norm = arr.map(x => ({ ko: String((x.ko || x.korean || '')).trim(), en: String((x.en || x.english || '')).trim() }))
+                     .filter(x => x.ko && x.en);
+      if (norm && norm.length) return norm;
+    } catch (_) {}
+    // Fallback: naive split by spaces
+    const koParts = String(korean || '').split(/\s+/).filter(Boolean);
+    const enParts = String(english || '').split(/\s+/).filter(Boolean);
+    const n = Math.min(koParts.length, enParts.length);
+    return new Array(n).fill(0).map((_, i) => ({ ko: koParts[i], en: enParts[i] }));
+  }, []);
+
   const generateLearningSentence = React.useCallback(async () => {
     const words = await ensureLearningWords();
     if (!words || words.length === 0) return null;
@@ -274,18 +319,18 @@ function LearningModesPage() {
   }, [ensureLearningWords]);
 
   const generateQuizSentence = React.useCallback(async (difficulty) => {
+    if (difficulty === 1) return null; // single word handled separately
+    if (difficulty === 2) {
+      // Level 2: draw from curriculum
+      const pair = await getCurriculumSentence();
+      return pair;
+    }
+    // Level 3: keep AI-generated longer sentence using learning words
     const words = await ensureLearningWords();
     if (!words || words.length === 0) return null;
-    if (difficulty === 1) return null; // single word handled separately
-    
-    const subset = pickRandom(words, difficulty === 2 ? Math.max(2, Math.min(5, Math.floor(Math.random()*4)+2)) : Math.max(4, Math.min(8, Math.floor(Math.random()*5)+4)));
+    const subset = pickRandom(words, Math.max(4, Math.min(8, Math.floor(Math.random()*5)+4)));
     const examples = subset.map(w => `${w.korean} (${w.english})`).join(', ');
-    let prompt = '';
-    if (difficulty === 2) {
-      prompt = `Using ONLY some of these Korean learning words: ${examples}\nCreate ONE simple Korean sentence (3-6 words) that uses basic grammar rules.\nReturn ONLY JSON: {"korean":"...","english":"..."}`;
-    } else {
-      prompt = `Using ONLY some of these Korean learning words: ${examples}\nCreate ONE longer, more complex Korean sentence (7-12 words) with proper grammar, particles, and natural structure.\nReturn ONLY JSON: {"korean":"...","english":"..."}`;
-    }
+    const prompt = `Using ONLY some of these Korean learning words: ${examples}\nCreate ONE longer, more complex Korean sentence (7-12 words) with proper grammar, particles, and natural structure.\nReturn ONLY JSON: {"korean":"...","english":"..."}`;
     try {
       const res = await api.chat(prompt);
       const data = await res.json();
@@ -294,7 +339,6 @@ function LearningModesPage() {
         return { korean: String(obj.korean), english: String(obj.english) };
       }
     } catch (_) {}
-    // Fallback: naive sentence from subset words
     const kor = subset.map(w => w.korean).join(' ');
     const eng = subset.map(w => w.english).join(' ');
     return { korean: kor, english: eng };
@@ -656,27 +700,74 @@ function LearningModesPage() {
       if (!words || words.length === 0) return;
       
       if (quizMode === 'hands-free') {
-        // Hands-free mode: Use first 20 learning words in order
-        const selectedWords = words.slice(0, Math.min(20, words.length));
-        setCurrentSetWords(selectedWords);
-        try {
-          // Show progress while batch TTS is generated
-          setLoopGenerating(true);
-          setLoopProgress(10);
-          const timer = setInterval(() => setLoopProgress((p) => Math.min(90, p + 5)), 300);
-          await generateAndPlayLoop(selectedWords, 'ko-KR', 1.0, quizDelaySec);
-          clearInterval(timer);
-          setLoopProgress(100);
-          // Keep playing until stopped (respect pause)
+        if (quizDifficulty === 1) {
+          // Hands-free Level 1: chunked words (20 per set) by date order, choose set or random set
+          const totalSets = Math.max(1, Math.ceil(words.length / 20));
+          const chosenIndex = randomizeSet ? (Math.floor(Math.random() * totalSets) + 1) : Math.min(Math.max(1, setIndex), totalSets);
+          const start = (chosenIndex - 1) * 20;
+          const selectedWords = words.slice(start, Math.min(start + 20, words.length));
+          setCurrentSetWords(selectedWords);
+          try {
+            // Show progress while batch TTS is generated
+            setLoopGenerating(true);
+            setLoopProgress(10);
+            const timer = setInterval(() => setLoopProgress((p) => Math.min(90, p + 5)), 300);
+            await generateAndPlayLoop(selectedWords, 'ko-KR', 1.0, quizDelaySec);
+            clearInterval(timer);
+            setLoopProgress(100);
+            // Keep playing until stopped (respect pause)
+            while (playingRef.current && quizLoopRef.current) {
+              await waitWhilePaused();
+              await new Promise(r => setTimeout(r, 300));
+            }
+          } catch (err) {
+            console.error('Failed to generate loop:', err);
+          } finally {
+            setLoopGenerating(false);
+            setLoopProgress(0);
+          }
+        } else {
+          // Hands-free Level 2/3: sentences (no recording), Level 2 from curriculum with word-by-word explanation
+          updateMediaSession('Audio Learning', 'Korean Learning', true);
+          setCurrentSetWords([]);
           while (playingRef.current && quizLoopRef.current) {
-            await waitWhilePaused();
+            await waitWhilePaused(); if (!playingRef.current) break;
+            const sent = await generateQuizSentence(quizDifficulty);
+            if (!sent) break;
+            // Say English first
+            updateMediaSession(sent.english, 'English', true);
+            await waitWhilePaused(); if (!playingRef.current) break;
+            await speak(sent.english, 'en-US', 1.0);
+            if (!playingRef.current || !quizLoopRef.current) break;
+            // Level 2: word-by-word explanation in English
+            if (quizDifficulty === 2) {
+              const pairs = await getWordByWordPairs(sent.english, sent.korean);
+              if (pairs && pairs.length) {
+                for (const p of pairs) {
+                  if (!playingRef.current || !quizLoopRef.current) break;
+                  await waitWhilePaused(); if (!playingRef.current) break;
+                  // Say English gloss first
+                  if (p.en) {
+                    updateMediaSession(String(p.en), 'English', true);
+                    await speak(String(p.en), 'en-US', 1.0);
+                  }
+                  if (!playingRef.current || !quizLoopRef.current) break;
+                  await waitWhilePaused(); if (!playingRef.current) break;
+                  // Then Korean token
+                  if (p.ko) {
+                    updateMediaSession(String(p.ko), 'Korean', true);
+                    await speak(String(p.ko), 'ko-KR', 1.0);
+                  }
+                  await new Promise(r => setTimeout(r, 150));
+                }
+              }
+            }
+            // Then say Korean sentence
+            await waitWhilePaused(); if (!playingRef.current) break;
+            updateMediaSession(sent.korean, 'Korean', true);
+            await speak(sent.korean, 'ko-KR', 1.0);
             await new Promise(r => setTimeout(r, 300));
           }
-        } catch (err) {
-          console.error('Failed to generate loop:', err);
-        } finally {
-          setLoopGenerating(false);
-          setLoopProgress(0);
         }
       } else {
         // Recording mode: Use individual audio files
@@ -777,7 +868,7 @@ function LearningModesPage() {
         stopKeepAlive();
       }
     }
-  }, [ensureLearningWords, quizMode, startMicRecording, stopMicRecording, playRecorded, quizDelaySec, quizRecordDurationSec, startSpeechRecognition, stopSpeechRecognition, recognizedText, pushHistory, quizDifficulty, generateQuizSentence, waitWhilePaused]);
+  }, [ensureLearningWords, quizMode, startMicRecording, stopMicRecording, playRecorded, quizDelaySec, quizRecordDurationSec, startSpeechRecognition, stopSpeechRecognition, recognizedText, pushHistory, quizDifficulty, generateQuizSentence, waitWhilePaused, setIndex, randomizeSet]);
 
   return (
     <div className="audio-page">
@@ -811,6 +902,24 @@ function LearningModesPage() {
                   <option value={3}>Level 3: Longer Sentences (7-12 words)</option>
                 </select>
               </div>
+              {quizMode === 'hands-free' && quizDifficulty === 1 && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600 }}>Set (20/each)</span>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={setIndex}
+                      onChange={(e)=>setSetIndex(Math.max(1, parseInt(e.target.value||'1', 10)))}
+                    />
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input type="checkbox" checked={randomizeSet} onChange={(e)=>setRandomizeSet(e.target.checked)} />
+                    <span style={{ fontSize: 12, fontWeight: 600 }}>Random set each start</span>
+                  </label>
+                </div>
+              )}
               {quizMode === 'recording' && recordingError && (
                 <div style={{ padding: '10px', background: '#fee', border: '1px solid #fcc', borderRadius: 6, fontSize: 11, color: '#c33' }}>
                   <div style={{ fontWeight: 600, marginBottom: 4 }}>⚠️ {recordingError}</div>

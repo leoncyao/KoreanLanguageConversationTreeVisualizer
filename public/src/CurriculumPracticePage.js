@@ -55,6 +55,9 @@ function CurriculumPracticePage() {
   const [usedPhraseIds, setUsedPhraseIds] = useState([]); // Track which phrases we've used
   const [allPhrases, setAllPhrases] = useState([]); // Store all curriculum phrases
   const [usingVariations, setUsingVariations] = useState(false); // Whether we're in variation mode
+  const [sessionNoTrack, setSessionNoTrack] = useState(false); // Session flag: do not track stats for remixed/new sentences
+  const SESSION_SIZE = 5;
+  const [sessionPhrases, setSessionPhrases] = useState([]); // Fixed subset for this session
   const [level, setLevel] = useState(1); // 1, 2, 3 -> number of blanks
 
   const createBlankPhrase = useCallback((phrase) => {
@@ -117,6 +120,72 @@ function CurriculumPracticePage() {
 
   const blankPhrase = currentPhrase ? createBlankPhrase(currentPhrase) : null;
 
+  // Choose next phrase from locally loaded curriculum, without refetching
+  const selectNextCurriculumPhrase = useCallback(() => {
+    // Work from the fixed session subset; when exhausted, loop the same subset
+    const pool = Array.isArray(sessionPhrases) && sessionPhrases.length > 0 ? sessionPhrases : allPhrases;
+    if (!Array.isArray(pool) || pool.length === 0) return false;
+    const used = new Set(usedPhraseIds);
+    let next = pool.find((p) => !used.has(p.id));
+    if (!next) {
+      // Reset and start again from the same 5
+      setUsedPhraseIds([]);
+      next = pool[0];
+    }
+    setUsedPhraseIds((prev) => prev.includes(next.id) ? prev : [...prev, next.id]);
+    setCurrentPhrase(next);
+    setUsingVariations(false);
+    return true;
+  }, [sessionPhrases, allPhrases, usedPhraseIds]);
+
+  // Extract first JSON object from a chat response
+  const parseJsonObject = useCallback((text) => {
+    if (!text) return null;
+    const m = String(text).match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    try { const obj = JSON.parse(m[0]); return obj && typeof obj === 'object' ? obj : null; } catch (_) { return null; }
+  }, []);
+
+  // Remix current sentence: keep POS order, replace words/grammar; enter no-track mode
+  const handleRemixSentence = useCallback(async () => {
+    try {
+      const en = String(currentPhrase?.english_text || '').trim();
+      const ko = String(currentPhrase?.korean_text || '').trim();
+      if (!en || !ko) return;
+      setSessionNoTrack(true);
+      const prompt = `Create ONE new sentence pair (Korean + English) by REMIXING the content of the given sentence while preserving the sequence of parts of speech (POS) and clause order. Keep it natural and grammatical. Replace verbs, nouns, adjectives, tenses, and particles as needed, but mirror the original POS silhouette. Return ONLY JSON with these keys: {"korean":"…","english":"…"}.\nOriginal (EN): ${en}\nOriginal (KO): ${ko}`;
+      const res = await api.chat(prompt);
+      const data = await res.json().catch(() => null);
+      const obj = parseJsonObject(data && (data.response || ''));
+      if (obj && obj.korean && obj.english) {
+        setCurrentPhrase({ id: `remix-${Date.now()}`, korean_text: String(obj.korean), english_text: String(obj.english), times_correct: 0 });
+        setFeedback('');
+        setInputPlaceholder('');
+        setInputValues([]);
+        setCurrentBlankIndex(0);
+        setShowAnswer(false);
+      }
+    } catch (_) {}
+  }, [currentPhrase, parseJsonObject]);
+
+  // Add the current sentence to curriculum (manual save)
+  const handleAddCurrentToCurriculum = useCallback(async () => {
+    try {
+      const en = String(currentPhrase?.english_text || '').trim();
+      const ko = String(currentPhrase?.korean_text || '').trim();
+      if (!en || !ko) return;
+      const res = await api.addCurriculumPhrase({ korean_text: ko, english_text: en });
+      if (res.ok) {
+        setFeedback('Added to curriculum ✓');
+      } else {
+        const t = await res.text().catch(() => '');
+        setFeedback('Failed to add to curriculum' + (t ? `: ${t}` : ''));
+      }
+    } catch (e) {
+      setFeedback('Failed to add to curriculum');
+    }
+  }, [currentPhrase]);
+
   const speakText = useCallback((text, onEnd, repeatCount = 3) => {
     try {
       const synth = window.speechSynthesis;
@@ -159,8 +228,17 @@ function CurriculumPracticePage() {
         return;
       }
       const phrases = await response.json();
-      setAllPhrases(Array.isArray(phrases) ? phrases : []);
-      console.log('Loaded', phrases.length, 'curriculum phrases');
+      const list = Array.isArray(phrases) ? phrases : [];
+      setAllPhrases(list);
+      console.log('Loaded', list.length, 'curriculum phrases');
+      // Initialize fixed session subset (repeat these)
+      const shuffled = [...list].sort(() => Math.random() - 0.5);
+      const subset = shuffled.slice(0, Math.min(SESSION_SIZE, shuffled.length));
+      setSessionPhrases(subset);
+      setUsedPhraseIds([]);
+      if (subset.length > 0) {
+        setCurrentPhrase(subset[0]);
+      }
     } catch (e) {
       console.error('Error loading phrases:', e);
     }
@@ -532,10 +610,14 @@ Keep it concise and structured, focusing on helping someone understand how the s
       setInputPlaceholder('');
       setInputValues([]);
       setCurrentBlankIndex(0);
-      setLoading(true);
-      await fetchRandomPhrase();
+      // Prefer advancing locally without refetching all the time
+      const advanced = selectNextCurriculumPhrase();
+      if (!advanced) {
+        setLoading(true);
+        await fetchRandomPhrase();
+      }
     } catch (_) {}
-  }, [fetchRandomPhrase]);
+  }, [fetchRandomPhrase, selectNextCurriculumPhrase]);
 
   const handleInputChange = useCallback((index, value) => {
     const newInputValues = [...inputValues];
@@ -581,9 +663,11 @@ Keep it concise and structured, focusing on helping someone understand how the s
           
           async function proceedToNext() {
             try {
-              // Note: Variations are now added to curriculum immediately when generated,
-              // so we just need to update stats if it's already in the curriculum
-              if (usingVariations && currentPhrase && String(currentPhrase.id).startsWith('variation-')) {
+              // Only update stats when not in no-track mode and not a generated/remix entry
+              const isGenerated = currentPhrase && (String(currentPhrase.id).startsWith('variation-') || String(currentPhrase.id).startsWith('remix-'));
+              if (sessionNoTrack || isGenerated) {
+                // Skip tracking
+              } else if (usingVariations && currentPhrase && String(currentPhrase.id).startsWith('variation-')) {
                 // Check if variation was already added (has db_id)
                 if (currentPhrase.db_id) {
                   console.log('[CURRICULUM] Variation already in curriculum with ID:', currentPhrase.db_id);
@@ -642,13 +726,16 @@ Keep it concise and structured, focusing on helping someone understand how the s
             setInputValues([]);
             setCurrentBlankIndex(0);
             setShowAnswer(false);
-            setLoading(true);
-            
-            // Wait a moment to show feedback, then fetch next phrase
-            setTimeout(async () => {
+            setLoading(false);
+            // After a short delay to show feedback, advance locally without refetching
+            setTimeout(() => {
               setFeedback('');
-              await fetchRandomPhrase();
-            }, 2000);
+              const ok = selectNextCurriculumPhrase();
+              if (!ok) {
+                // No more local phrases; stay in session without changing total
+                setUsingVariations(true);
+              }
+            }, 800);
           };
           
           // Reconstruct full sentence for speaking
@@ -682,7 +769,8 @@ Keep it concise and structured, focusing on helping someone understand how the s
         
         // Update stats on incorrect (only for actual curriculum phrases, not variations)
         try {
-          if (blankPhrase.id && String(blankPhrase.id) && !String(blankPhrase.id).startsWith('variation-')) {
+          const isGenerated = currentPhrase && (String(currentPhrase.id).startsWith('variation-') || String(currentPhrase.id).startsWith('remix-'));
+          if (!sessionNoTrack && !isGenerated && blankPhrase.id && String(blankPhrase.id) && !String(blankPhrase.id).startsWith('variation-')) {
             await api.updateCurriculumPhraseStats(blankPhrase.id, false);
           }
         } catch (error) {
@@ -875,6 +963,17 @@ Keep it concise and structured, focusing on helping someone understand how the s
           </div>
         </div>
       )}
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'center' }}>
+        <button type="button" className="regenerate-button" onClick={handleRemixSentence}>
+          Remix: New Sentence (no tracking)
+        </button>
+        <button type="button" className="regenerate-button" onClick={handleAddCurrentToCurriculum}>
+          Add to Curriculum
+        </button>
+        {sessionNoTrack && (
+          <span style={{ alignSelf: 'center', fontSize: 12, color: '#6b7280' }}>New sentence mode active — progress not tracked</span>
+        )}
+      </div>
       {currentPhrase.times_correct > 0 && currentPhrase.id && String(currentPhrase.id) && !String(currentPhrase.id).startsWith('variation-') && (
         <p className="correct-count">Correct answers: {currentPhrase.times_correct}</p>
       )}

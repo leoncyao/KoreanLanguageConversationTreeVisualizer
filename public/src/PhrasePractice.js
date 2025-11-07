@@ -63,6 +63,7 @@ function PhrasePractice({ modelSentence, grammarRule }) {
   const [explanationText, setExplanationText] = useState('');
   const [isLoadingExplanation, setIsLoadingExplanation] = useState(false);
   const [explanationPhraseId, setExplanationPhraseId] = useState(null);
+  const [sessionNoTrack, setSessionNoTrack] = useState(false); // When true, do not track curriculum stats this session
 
   const speakText = useCallback((text, onEnd, repeatCount = 3) => {
     try {
@@ -121,6 +122,44 @@ function PhrasePractice({ modelSentence, grammarRule }) {
       setLoading(false);
     }
   }, []);
+
+  // Extract first JSON object from a chat response
+  const parseJsonObject = useCallback((text) => {
+    if (!text) return null;
+    const m = String(text).match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    try { const obj = JSON.parse(m[0]); return obj && typeof obj === 'object' ? obj : null; } catch (_) { return null; }
+  }, []);
+
+  // Remix: generate a new sentence based on current, replacing content but keeping POS order
+  const handleRemixSentence = useCallback(async () => {
+    try {
+      if (!currentPhrase) return;
+      setSessionNoTrack(true); // Enter new-sentence mode (no tracking) for this session
+      const english = String(currentPhrase.english_text || currentPhrase.english || '').trim();
+      const korean = String(currentPhrase.korean_text || currentPhrase.korean || '').trim();
+      if (!english || !korean) return;
+      const prompt = `Create ONE new sentence pair (Korean + English) by REMIXING the content of the given sentence while preserving the sequence of parts of speech (POS) and clause order.
+Keep it natural and grammatical. Replace verbs, nouns, adjectives, tenses, and particles as needed, but mirror the original POS silhouette.
+Return ONLY JSON with these keys: {"korean":"…","english":"…"}.
+Original (EN): ${english}
+Original (KO): ${korean}`;
+      const res = await api.chat(prompt);
+      const data = await res.json().catch(() => null);
+      const obj = parseJsonObject(data && (data.response || ''));
+      if (obj && obj.korean && obj.english) {
+        setCurrentPhrase({ korean_text: String(obj.korean), english_text: String(obj.english), id: `remix-${Date.now()}`, times_correct: 0 });
+        setGeneratedVariations([]);
+        setCurrentVariationIndex(0);
+        setExplanationText('');
+        setExplanationPhraseId(null);
+        setShowExplanation(false);
+        setFeedback('');
+        setInputPlaceholder('');
+        setInputValue('');
+      }
+    } catch (_) {}
+  }, [currentPhrase, parseJsonObject]);
 
   const generateVariations = useCallback(async () => {
     if (!modelSentence) return;
@@ -360,8 +399,9 @@ Keep it concise and structured, focusing on helping someone understand how the s
         setFeedback('Correct!');
         
         async function proceedToNext() {
-          // Update phrase stats in database (only if not a variation)
-          if (!blankPhrase.id.startsWith('variation-')) {
+          // Update phrase stats unless we're in no-track mode or this is a generated variation/remix
+          const isGenerated = String(blankPhrase.id || '').startsWith('variation-') || String(blankPhrase.id || '').startsWith('remix-');
+          if (!sessionNoTrack && !isGenerated) {
             try {
               await api.updatePhraseStats(blankPhrase.id, true);
             } catch (error) {
@@ -537,6 +577,19 @@ Keep it concise and structured, focusing on helping someone understand how the s
           )}
         </div>
       )}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+        <button 
+          type="button"
+          className="regenerate-button"
+          onClick={handleRemixSentence}
+          title="Create a new sentence with new words/grammar but same POS structure (no tracking this session)"
+        >
+          Remix: New Sentence (no tracking)
+        </button>
+        {sessionNoTrack && (
+          <span style={{ fontSize: 12, color: '#6b7280' }}>New sentence mode active — progress not tracked</span>
+        )}
+      </div>
       {currentPhrase.times_correct > 0 && (
         <p className="correct-count">Correct answers: {currentPhrase.times_correct}</p>
       )}

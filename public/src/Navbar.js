@@ -99,6 +99,9 @@ function Navbar() {
             <Link to="/translate" className="nav-link">Translate</Link>
           </li>
           <li className="nav-item">
+            <Link to="/chat" className="nav-link">Chat</Link>
+          </li>
+          <li className="nav-item">
             <Link to="/curriculum-practice" className="nav-link">Practice</Link>
           </li>
           <li className="nav-item">
@@ -130,6 +133,7 @@ function Navbar() {
                 <Link to="/journal-entries" className="dropdown-item" onClick={() => setShowMoreMenu(false)}>Journal Entries</Link>
                 <Link to="/stats" className="dropdown-item" onClick={() => setShowMoreMenu(false)}>Stats</Link>
                 <Link to="/pronunciation" className="dropdown-item" onClick={() => setShowMoreMenu(false)}>Pronunciation</Link>
+                <Link to="/chat" className="dropdown-item" onClick={() => setShowMoreMenu(false)}>Chat</Link>
                 <Link to="/lexicon-add" className="dropdown-item" onClick={() => setShowMoreMenu(false)}>Add to Lexicon</Link>
                 
               </div>

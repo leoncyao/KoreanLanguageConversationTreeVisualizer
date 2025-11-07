@@ -213,6 +213,12 @@ async function playAudioWithMediaSession(audioUrl, text, lang) {
       audio.oncanplay = null;
       audio.onloadeddata = null;
       
+      // Apply global playback speed from navbar
+      try {
+        const initialSpeed = Math.max(0.5, Math.min(2.0, Number(window.__APP_SPEECH_SPEED__) || 1.0));
+        audio.playbackRate = initialSpeed;
+      } catch (_) {}
+
       // Set up MediaSession metadata FIRST (before loading audio)
       updateMediaSession(
         text.substring(0, 50),
@@ -296,6 +302,11 @@ async function playAudioWithMediaSession(audioUrl, text, lang) {
         updateMediaSession(text.substring(0, 50), lang === 'ko-KR' ? 'Korean' : 'English', true);
         ensureAudioContextActive();
         requestWakeLock();
+        // Re-apply (or update) playback rate on play in case slider changed
+        try {
+          const currentSpeed = Math.max(0.5, Math.min(2.0, Number(window.__APP_SPEECH_SPEED__) || 1.0));
+          audio.playbackRate = currentSpeed;
+        } catch (_) {}
       };
       
       // Monitor audio state when page is hidden (Brave workaround)
@@ -333,6 +344,11 @@ async function playAudioWithMediaSession(audioUrl, text, lang) {
           // Audio started playing
           try { console.log('[AudioTTS] play started', { url: audioUrl }); } catch (_) {}
           updateMediaSession(text.substring(0, 50), lang === 'ko-KR' ? 'Korean' : 'English', true);
+          // Guard: ensure playbackRate stays in sync shortly after start
+          try {
+            const currentSpeed = Math.max(0.5, Math.min(2.0, Number(window.__APP_SPEECH_SPEED__) || 1.0));
+            audio.playbackRate = currentSpeed;
+          } catch (_) {}
           
           // Double-check it's still playing after a short delay (Brave workaround)
           setTimeout(() => {

@@ -15,6 +15,7 @@ function ChatPage() {
   });
   const [chatMessages, setChatMessages] = React.useState([]);
   const [chatInput, setChatInput] = React.useState('');
+  const sendBtnRef = React.useRef(null);
 
   const requestExplanation = React.useCallback(async (input, translation) => {
     try {
@@ -43,15 +44,13 @@ Keep it concise and structured for a learner.`;
 
   const handleSend = React.useCallback(async () => {
     const q = chatInput.trim();
-    if (!q || !lastContext) return;
+    if (!q) return;
     setChatMessages((msgs) => [...msgs, { role: 'user', text: q }]);
     setChatInput('');
     try {
-      const prompt = `You are helping a learner understand a prior translation.
-Original: ${lastContext.input}
-Translation (ko): ${lastContext.translation}
-User question: ${q}
-Answer clearly and concisely.`;
+      const prompt = lastContext
+        ? `You are helping a learner understand a prior translation.\nOriginal: ${lastContext.input}\nTranslation (ko): ${lastContext.translation}\nUser question: ${q}\nAnswer clearly and concisely.`
+        : `User question: ${q}\nAnswer clearly and concisely for a Korean learner.`;
       const res = await fetch((process.env.API_BASE_URL || '') + '/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -63,6 +62,14 @@ Answer clearly and concisely.`;
       setChatMessages((msgs) => [...msgs, { role: 'assistant', text }]);
     } catch (_) {}
   }, [chatInput, lastContext]);
+
+  // Keyboard support: Enter to send from input (Tab then Space on the button already works natively)
+  const onChatKeyDown = React.useCallback((e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }, [handleSend]);
 
   // Minimal Markdown renderer (safe subset)
   const escapeHtml = (s) => s
@@ -152,10 +159,11 @@ Answer clearly and concisely.`;
               type="text"
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={onChatKeyDown}
               placeholder={lastContext ? 'Ask about the explanation…' : 'Optional: translate first to provide context'}
               style={{ flex: 1, padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 10 }}
             />
-            <button className="translation-link" onClick={handleSend} disabled={!chatInput.trim()}>
+            <button ref={sendBtnRef} className="translation-link" onClick={handleSend} disabled={!chatInput.trim()}>
               Send
             </button>
           </div>

@@ -1,0 +1,43 @@
+{
+  "rules": [
+    {
+      "name": "UpdateHowThisWasMade",
+      "description": "Append a detailed change-log entry to HOWTHISWASMADE.md after every AI edit or file operation.",
+      "appliesTo": ["build-with-ai", "edit-with-ai", "terminal-commands", "file-create", "file-delete", "refactor"],
+      "prompt": [
+        "After completing ANY change (even tiny UI text tweaks, prop renames, CSS, config flips, route changes, caching tweaks), update HOWTHISWASMADE.md by APPENDING a new 'Edit: YYYY-MM-DD' section.",
+        "",
+        "Follow the Authoring rules at the top of HOWTHISWASMADE.md. Be exhaustive and specific:",
+        "- Files: list exact relative paths; group only when identical edits are applied; otherwise separate entries.",
+        "- Summary: one to two lines describing what changed.",
+        "- Rationale: why it was needed (bug, UX, performance, security, consistency, maintainability).",
+        "- For backend/API: include endpoint paths, methods, and response shape/status changes.",
+        "- For service worker/caching: name strategy (cache-first/network-first), affected paths, version bump.",
+        "- For UI: mention new buttons/labels, routes, toggles, sliders; note default values and state changes.",
+        "- For audio: mention play/stop/pause behavior, wake lock, MediaSession hooks.",
+        "- For feature flags or environment variables: list keys and default values.",
+        "- For database: list schema/table names, column additions/changes, indexes, constraints, migrations (file names).",
+        "- For libraries/dependencies: list added/removed/updated packages with versions and why.",
+        "- For commands: record key commands run (build/migrate/generate) and notable outputs/errors fixed.",
+        "- Include code references with line numbers and function names for non-trivial edits.",
+        "  Use code reference fences exactly in this format (no language tag):",
+        "  ```start:end:path/to/file\n// focused snippet with the changed function or lines\n```",
+        "  Prefer citing function/method names in prose too (e.g., handleStartQuizLoop, generateQuizSentence).",
+        "- If a prior entry is superseded, DO NOT delete it—add a new entry noting the supersession.",
+        "",
+        "Formatting template:",
+        "### Edit: YYYY-MM-DD",
+        "- Files: `<path1>`, `<path2>`",
+        "- Summary: <what changed>",
+        "- Rationale: <why>",
+        "- Code refs (optional but encouraged): one or more fenced references with start:end:path",
+        "- DB changes (optional): tables/columns/indexes",
+        "- Deps (optional): package and version",
+        "",
+        "Ensure the new entry is appended at the end of HOWTHISWASMADE.md. Do not reorder prior entries."
+      ]
+    }
+  ]
+}
+
+
