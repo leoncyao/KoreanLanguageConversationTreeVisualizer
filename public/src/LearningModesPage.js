@@ -67,6 +67,7 @@ function LearningModesPage() {
   const [generatorLoading, setGeneratorLoading] = React.useState(false);
   const [generatedSetTitle, setGeneratedSetTitle] = React.useState('My Word Set');
   const [generatedWords, setGeneratedWords] = React.useState([]);
+  const [generatedSentences, setGeneratedSentences] = React.useState([]); // recent generated sentences for Level 2/3
 
   const parseJsonArray = (text) => {
     if (!text) return [];
@@ -75,6 +76,196 @@ function LearningModesPage() {
     if (!m) return [];
     try { const arr = JSON.parse(m[0]); return Array.isArray(arr) ? arr : []; } catch (_) { return []; }
   };
+
+  // --- Verb conjugation + pronoun helpers (very simple heuristic) ---
+  const PRONOUNS = React.useMemo(() => [
+    { ko: '나는', en: 'I' },
+    { ko: '너는', en: 'you' },
+    { ko: '우리는', en: 'we' },
+    { ko: '그는', en: 'he' },
+    { ko: '그녀는', en: 'she' },
+    { ko: '그들은', en: 'they' },
+  ], []);
+
+  const pickRandomPronoun = React.useCallback(() => PRONOUNS[Math.floor(Math.random() * PRONOUNS.length)], [PRONOUNS]);
+
+  const endsWithBrightVowel = (stem) => /[ㅏㅗ]$/.test(stem);
+
+  const conjugateVerbSimple = React.useCallback((baseForm, tense) => {
+    if (!baseForm || typeof baseForm !== 'string') return baseForm;
+    const stem = baseForm.endsWith('다') ? baseForm.slice(0, -1 * '다'.length) : baseForm;
+    // 하다 special
+    if (baseForm === '하다' || stem.endsWith('하')) {
+      if (tense === 'present') return '해요';
+      if (tense === 'past') return '했어요';
+      return '할 거예요';
+    }
+    const bright = endsWithBrightVowel(stem);
+    if (tense === 'present') return stem + (bright ? '아요' : '어요');
+    if (tense === 'past') return stem + (bright ? '았어요' : '었어요');
+    // future
+    const needsEu = /[^aeiou가-힣]$/.test(stem) || /[ㄱ-ㅎ]$/.test(stem); // rough guard
+    return stem + (stem.endsWith('ㄹ') ? ' 거예요' : (needsEu ? '을 거예요' : 'ㄹ 거예요'));
+  }, []);
+
+  const applyPronounAndTenseIfVerb = React.useCallback((wordObj) => {
+    if (!wordObj || !wordObj.korean) return wordObj;
+    // Only apply if type says 'verb' (learning words) or looks like dictionary form ending in 다
+    const isVerb = String(wordObj.type || '').toLowerCase() === 'verb' || /다$/.test(wordObj.korean);
+    if (!isVerb) return wordObj;
+    const tenses = ['present', 'past', 'future'];
+    const tense = tenses[Math.floor(Math.random() * tenses.length)];
+    const pron = pickRandomPronoun();
+    const conj = conjugateVerbSimple(wordObj.korean, tense);
+    return { ...wordObj, korean: `${pron.ko} ${conj}` };
+  }, [pickRandomPronoun, conjugateVerbSimple]);
+
+  // Helpers for Level 2: subject (pronoun or noun) + conjugated verb phrase
+  const hasFinalConsonant = React.useCallback((k) => {
+    if (!k || typeof k !== 'string') return false;
+    const ch = k.trim().slice(-1);
+    const code = ch.charCodeAt(0) - 0xac00;
+    if (code < 0 || code > 11171) return false;
+    const jong = code % 28;
+    return jong !== 0;
+  }, []);
+
+  const pickRandomVerb = React.useCallback((words) => {
+    const candidates = (Array.isArray(words) ? words : []).filter((w) => {
+      const ko = String(w.korean || '');
+      const t = String(w.type || '').toLowerCase();
+      return t === 'verb' || /다$/.test(ko);
+    });
+    if (candidates.length === 0) return null;
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  }, []);
+
+  const pickRandomNoun = React.useCallback((words) => {
+    const candidates = (Array.isArray(words) ? words : []).filter((w) => {
+      const ko = String(w.korean || '');
+      const t = String(w.type || '').toLowerCase();
+      const looksVerb = /다$/.test(ko);
+      return t === 'noun' || (!looksVerb && t !== 'verb');
+    });
+    if (candidates.length === 0) return null;
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  }, []);
+
+  const englishPresent3rd = React.useCallback((base) => {
+    const b = String(base || '').trim();
+    const irregular = { have: 'has', do: 'does', go: 'goes', be: 'is' };
+    if (irregular[b]) return irregular[b];
+    if (/[^aeiou]y$/i.test(b)) return b.replace(/y$/i, 'ies');
+    if (/(s|x|z|ch|sh)$/i.test(b)) return b + 'es';
+    return b + 's';
+  }, []);
+
+  const englishPast = React.useCallback((base) => {
+    const b = String(base || '').trim();
+    const irregular = { go: 'went', have: 'had', do: 'did', be: 'was', eat: 'ate', see: 'saw', make: 'made', take: 'took', come: 'came', get: 'got', say: 'said', write: 'wrote', read: 'read' };
+    if (irregular[b]) return irregular[b];
+    if (/e$/i.test(b)) return b + 'd';
+    if (/[^aeiou]y$/i.test(b)) return b.replace(/y$/i, 'ied');
+    return b + 'ed';
+  }, []);
+
+  const buildSubjectAndVerbPair = React.useCallback((words) => {
+    // Pick subject: 50% pronoun, else noun from words (fallback to pronoun)
+    let subjectKo = '';
+    let subjectEn = '';
+    let thirdPersonSingular = false;
+    const usePronoun = Math.random() < 0.5;
+    if (usePronoun) {
+      const p = pickRandomPronoun();
+      subjectKo = p.ko; subjectEn = p.en;
+      thirdPersonSingular = /^(he|she|it)$/i.test(p.en);
+    } else {
+      const n = pickRandomNoun(words);
+      if (n) {
+        const particle = hasFinalConsonant(String(n.korean || '')) ? '은' : '는';
+        subjectKo = `${String(n.korean || '').trim()} ${particle}`.trim();
+        subjectEn = String(n.english || String(n.korean || ''));
+        thirdPersonSingular = true;
+      } else {
+        const pFallback = pickRandomPronoun();
+        subjectKo = pFallback.ko; subjectEn = pFallback.en;
+        thirdPersonSingular = /^(he|she|it)$/i.test(pFallback.en);
+      }
+    }
+
+    // Pick verb
+    const v = pickRandomVerb(words);
+    if (!v) return null;
+    const verbKoBase = String(v.korean || '');
+    const verbEnBase = String(v.english || '').replace(/^to\s+/i, '').split(/[;,]/)[0].trim() || 'do';
+    const tenses = ['present', 'past', 'future'];
+    const tense = tenses[Math.floor(Math.random() * tenses.length)];
+    const koVerb = conjugateVerbSimple(verbKoBase, tense);
+    let enVerb = '';
+    if (tense === 'present') {
+      enVerb = thirdPersonSingular ? englishPresent3rd(verbEnBase) : verbEnBase;
+    } else if (tense === 'past') {
+      enVerb = englishPast(verbEnBase);
+    } else {
+      enVerb = `will ${verbEnBase}`;
+    }
+    const english = `${subjectEn} ${enVerb}`.trim();
+    const korean = `${subjectKo} ${koVerb}`.trim();
+    return { english, korean };
+  }, [pickRandomPronoun, pickRandomNoun, pickRandomVerb, hasFinalConsonant, conjugateVerbSimple, englishPresent3rd, englishPast]);
+
+  // For Level 2 (hands-free), prefer pronouns-only subjects to keep sentences simple and natural
+  const buildPronounAndVerbPair = React.useCallback((words) => {
+    const p = pickRandomPronoun();
+    const v = pickRandomVerb(words);
+    if (!v) return null;
+    const verbKoBase = String(v.korean || '');
+    const verbEnBase = String(v.english || '').replace(/^to\s+/i, '').split(/[;,]/)[0].trim() || 'do';
+    const tenses = ['present', 'past', 'future'];
+    const tense = tenses[Math.floor(Math.random() * tenses.length)];
+    const koVerb = conjugateVerbSimple(verbKoBase, tense);
+    let enVerb = '';
+    if (tense === 'present') {
+      enVerb = /^(he|she|it)$/i.test(p.en) ? englishPresent3rd(verbEnBase) : verbEnBase;
+    } else if (tense === 'past') {
+      enVerb = englishPast(verbEnBase);
+    } else {
+      enVerb = `will ${verbEnBase}`;
+    }
+    const english = `${p.en} ${enVerb}`.trim();
+    const korean = `${p.ko} ${koVerb}`.trim();
+    return { english, korean };
+  }, [pickRandomPronoun, pickRandomVerb, conjugateVerbSimple, englishPresent3rd, englishPast]);
+
+  // Level 2 alternative: noun + adjective sentence (present tense)
+  const pickRandomAdjective = React.useCallback((words) => {
+    const candidates = (Array.isArray(words) ? words : []).filter((w) => {
+      const t = String(w.type || '').toLowerCase();
+      const ko = String(w.korean || '');
+      return t === 'adjective' || /다$/.test(ko); // heuristic for descriptive verbs
+    });
+    if (candidates.length === 0) return null;
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  }, []);
+
+  const buildNounAndAdjectiveSentence = React.useCallback((words) => {
+    const n = pickRandomNoun(words);
+    const a = pickRandomAdjective(words);
+    if (!n || !a) return null;
+    const nounKo = String(n.korean || '').trim();
+    const nounEn = String(n.english || String(n.korean || '')).trim();
+    const particle = hasFinalConsonant(nounKo) ? '은' : '는';
+    const adjKoBase = String(a.korean || '').trim();
+    const adjEnBaseRaw = String(a.english || '').trim();
+    // Conjugate adjective to present polite
+    const koAdj = conjugateVerbSimple(adjKoBase, 'present');
+    // Heuristic: strip leading "to be " or "be " to get adjective gloss
+    let adjEn = adjEnBaseRaw.replace(/^to\s+be\s+/i, '').replace(/^be\s+/i, '');
+    // Build sentences
+    const korean = `${nounKo} ${particle} ${koAdj}`.trim();
+    const english = `The ${nounEn} is ${adjEn}`.trim();
+    return { english, korean };
+  }, [pickRandomNoun, pickRandomAdjective, hasFinalConsonant, conjugateVerbSimple]);
 
   // Very simple conjugation hints for base-form verbs/adjectives (ends with '다')
   const buildConjugationHints = React.useCallback((ko) => {
@@ -321,9 +512,25 @@ English: ${english}`;
   const generateQuizSentence = React.useCallback(async (difficulty) => {
     if (difficulty === 1) return null; // single word handled separately
     if (difficulty === 2) {
-      // Level 2: draw from curriculum
-      const pair = await getCurriculumSentence();
-      return pair;
+      // Level 2: prefer pronoun+verb or noun+adjective from learning words
+      const words = await ensureLearningWords();
+      if (!words || words.length === 0) return null;
+      const tryBuild = async () => {
+        const tryOrder = Math.random() < 0.5 ? ['pv', 'na'] : ['na', 'pv'];
+        for (const kind of tryOrder) {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const pair = kind === 'pv' ? buildPronounAndVerbPair(words) : buildNounAndAdjectiveSentence(words);
+            if (pair && pair.english && pair.korean) {
+              const en = String(pair.english).trim();
+              const ko = String(pair.korean).trim();
+              if (en.includes(' ') && ko.includes(' ')) return pair;
+            }
+          }
+        }
+        return null;
+      };
+      const built = await tryBuild();
+      return built || { english: 'I do', korean: '나는 해요' };
     }
     // Level 3: keep AI-generated longer sentence using learning words
     const words = await ensureLearningWords();
@@ -698,21 +905,23 @@ English: ${english}`;
     try {
       const words = await ensureLearningWords();
       if (!words || words.length === 0) return;
+      const level = Number(quizDifficulty) || 1;
       
       if (quizMode === 'hands-free') {
-        if (quizDifficulty === 1) {
+        if (level === 1) {
           // Hands-free Level 1: chunked words (20 per set) by date order, choose set or random set
           const totalSets = Math.max(1, Math.ceil(words.length / 20));
           const chosenIndex = randomizeSet ? (Math.floor(Math.random() * totalSets) + 1) : Math.min(Math.max(1, setIndex), totalSets);
           const start = (chosenIndex - 1) * 20;
           const selectedWords = words.slice(start, Math.min(start + 20, words.length));
-          setCurrentSetWords(selectedWords);
+          const transformed = selectedWords.map(applyPronounAndTenseIfVerb);
+          setCurrentSetWords(transformed);
           try {
             // Show progress while batch TTS is generated
             setLoopGenerating(true);
             setLoopProgress(10);
             const timer = setInterval(() => setLoopProgress((p) => Math.min(90, p + 5)), 300);
-            await generateAndPlayLoop(selectedWords, 'ko-KR', 1.0, quizDelaySec);
+            await generateAndPlayLoop(transformed, 'ko-KR', 1.0, quizDelaySec);
             clearInterval(timer);
             setLoopProgress(100);
             // Keep playing until stopped (respect pause)
@@ -730,38 +939,19 @@ English: ${english}`;
           // Hands-free Level 2/3: sentences (no recording), Level 2 from curriculum with word-by-word explanation
           updateMediaSession('Audio Learning', 'Korean Learning', true);
           setCurrentSetWords([]);
+          setGeneratedSentences([]);
           while (playingRef.current && quizLoopRef.current) {
             await waitWhilePaused(); if (!playingRef.current) break;
-            const sent = await generateQuizSentence(quizDifficulty);
+            const sent = await generateQuizSentence(level);
             if (!sent) break;
+            // store recent sentence for UI display (most recent first, cap 10)
+            setGeneratedSentences((prev) => [{ english: String(sent.english || ''), korean: String(sent.korean || '') }, ...prev].slice(0, 10));
             // Say English first
             updateMediaSession(sent.english, 'English', true);
             await waitWhilePaused(); if (!playingRef.current) break;
             await speak(sent.english, 'en-US', 1.0);
             if (!playingRef.current || !quizLoopRef.current) break;
-            // Level 2: word-by-word explanation in English
-            if (quizDifficulty === 2) {
-              const pairs = await getWordByWordPairs(sent.english, sent.korean);
-              if (pairs && pairs.length) {
-                for (const p of pairs) {
-                  if (!playingRef.current || !quizLoopRef.current) break;
-                  await waitWhilePaused(); if (!playingRef.current) break;
-                  // Say English gloss first
-                  if (p.en) {
-                    updateMediaSession(String(p.en), 'English', true);
-                    await speak(String(p.en), 'en-US', 1.0);
-                  }
-                  if (!playingRef.current || !quizLoopRef.current) break;
-                  await waitWhilePaused(); if (!playingRef.current) break;
-                  // Then Korean token
-                  if (p.ko) {
-                    updateMediaSession(String(p.ko), 'Korean', true);
-                    await speak(String(p.ko), 'ko-KR', 1.0);
-                  }
-                  await new Promise(r => setTimeout(r, 150));
-                }
-              }
-            }
+            // Level 2 no longer performs word-by-word explanation; speak English then Korean only
             // Then say Korean sentence
             await waitWhilePaused(); if (!playingRef.current) break;
             updateMediaSession(sent.korean, 'Korean', true);
@@ -776,16 +966,18 @@ English: ${english}`;
           await waitWhilePaused(); if (!playingRef.current) break;
           let english = '';
           let korean = '';
-          if (quizDifficulty === 1) {
+          const level = Number(quizDifficulty) || 1;
+          if (level === 1) {
             // Level 1: Single word
             const w = words[Math.floor(Math.random() * words.length)];
             setCurrentQuizWord(w);
             setCurrentQuizSentence(null);
             english = String(w.english || '');
-            korean = String(w.korean || '');
+            const w2 = applyPronounAndTenseIfVerb(w);
+            korean = String(w2.korean || '');
           } else {
             // Level 2 or 3: Sentences
-            const sent = await generateQuizSentence(quizDifficulty);
+            const sent = await generateQuizSentence(level);
             if (!sent) break;
             setCurrentQuizWord(null);
             setCurrentQuizSentence(sent);
@@ -868,7 +1060,7 @@ English: ${english}`;
         stopKeepAlive();
       }
     }
-  }, [ensureLearningWords, quizMode, startMicRecording, stopMicRecording, playRecorded, quizDelaySec, quizRecordDurationSec, startSpeechRecognition, stopSpeechRecognition, recognizedText, pushHistory, quizDifficulty, generateQuizSentence, waitWhilePaused, setIndex, randomizeSet]);
+  }, [ensureLearningWords, quizMode, startMicRecording, stopMicRecording, playRecorded, quizDelaySec, quizRecordDurationSec, startSpeechRecognition, stopSpeechRecognition, recognizedText, pushHistory, quizDifficulty, generateQuizSentence, waitWhilePaused, setIndex, randomizeSet, applyPronounAndTenseIfVerb]);
 
   return (
     <div className="audio-page">
@@ -975,7 +1167,7 @@ English: ${english}`;
               </div>
             )}
               <div style={{ display: 'grid', gap: 6 }}>
-                <div style={{ fontSize: 12, fontWeight: 600 }}>Current prompt</div>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>Current words</div>
                 <div className="audio-en" style={{ padding: '8px 10px', border: '1px solid #ddd', borderRadius: 6, minHeight: 20 }}>
                   {currentQuizWord ? `How do you say "${currentQuizWord.english}"?` : (currentQuizSentence ? `How do you say "${currentQuizSentence.english}"?` : '—')}
                 </div>
@@ -999,6 +1191,19 @@ English: ${english}`;
                             </div>
                           ) : null;
                         })()}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {generatedSentences && generatedSentences.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Generated sentences (Level 2/3)</div>
+                  <div style={{ display: 'grid', gap: 4 }}>
+                    {generatedSentences.map((s, i) => (
+                      <div key={i} style={{ display: 'grid', gap: 2 }}>
+                        <div className="audio-en" style={{ padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6 }}>{s.english}</div>
+                        <div className="audio-ko" style={{ padding: '6px 8px', border: '1px solid #eee', borderRadius: 6 }}>{s.korean}</div>
                       </div>
                     ))}
                   </div>

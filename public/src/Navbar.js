@@ -19,6 +19,14 @@ function Navbar() {
     }
   });
   const [showMoreMenu, setShowMoreMenu] = React.useState(false);
+  const [theme, setTheme] = React.useState(() => {
+    try {
+      const saved = localStorage.getItem('app_theme');
+      return saved || 'dark';
+    } catch (_) {
+      return 'dark';
+    }
+  });
 
   React.useEffect(() => {
     const onOnline = () => setIsOffline(false);
@@ -76,6 +84,17 @@ function Navbar() {
     try { localStorage.setItem('app_speech_speed', String(speechSpeed)); } catch (_) {}
     window.__APP_SPEECH_SPEED__ = speechSpeed;
   }, [speechSpeed]);
+
+  // Apply theme (default dark)
+  React.useEffect(() => {
+    try { localStorage.setItem('app_theme', theme); } catch (_) {}
+    const root = document.documentElement;
+    if (theme === 'dark') {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+  }, [theme]);
 
   React.useEffect(() => {
     if (!showMoreMenu) return;
@@ -141,6 +160,9 @@ function Navbar() {
           </li>
         </ul>
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
+          <button type="button" className="mute-button" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>
+            {theme === 'dark' ? '🌙 Dark' : '☀️ Light'}
+          </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.75rem', border: '1px solid #ddd', borderRadius: '5px', background: 'white' }}>
             <span style={{ fontSize: '0.75rem', color: '#666', whiteSpace: 'nowrap' }}>Speed:</span>
             <input

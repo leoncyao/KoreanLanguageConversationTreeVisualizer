@@ -309,34 +309,7 @@ async function playAudioWithMediaSession(audioUrl, text, lang) {
         } catch (_) {}
       };
       
-      // Monitor audio state when page is hidden (Brave workaround)
-      if (!visibilityChangeHandler) {
-        visibilityChangeHandler = () => {
-          if (document.hidden && currentAudioElement && !currentAudioElement.ended && currentAudioElement.paused) {
-            // Audio was paused when page became hidden - try to resume
-            console.log('Page hidden and audio paused - attempting to resume');
-            setTimeout(() => {
-              if (currentAudioElement && !currentAudioElement.ended && currentAudioElement.paused && document.hidden) {
-                currentAudioElement.play().catch((err) => {
-                  console.warn('Failed to resume audio on visibility change:', err);
-                });
-              }
-            }, 200);
-          }
-        };
-        document.addEventListener('visibilitychange', visibilityChangeHandler);
-      }
-      
-      // Aggressive monitoring: Check every 500ms if audio is paused when hidden
-      if (audioResumeInterval) {
-        clearInterval(audioResumeInterval);
-      }
-      audioResumeInterval = setInterval(() => {
-        if (document.hidden && currentAudioElement && !currentAudioElement.ended && currentAudioElement.paused) {
-          console.log('Audio paused while hidden - resuming');
-          currentAudioElement.play().catch(() => {});
-        }
-      }, 500);
+      // Removed hidden-page auto-resume to avoid unwanted restarts on Android
       
       // Wait for audio to be ready before playing
       const playWhenReady = () => {

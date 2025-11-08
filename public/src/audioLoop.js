@@ -112,16 +112,7 @@ async function generateAndPlayLoop(words, lang = 'ko-KR', rate = 1.0, delaySecon
       }
     };
     
-    // Monitor and resume if paused when hidden (Brave workaround)
-    const resumeInterval = setInterval(() => {
-      if (isLooping && document.hidden && loopAudioElement && loopAudioElement.paused && !loopAudioElement.ended) {
-        console.log('Loop audio paused while hidden - resuming');
-        loopAudioElement.play().catch(() => {});
-      }
-    }, 500);
-    
-    // Store interval for cleanup
-    loopAudioElement._resumeInterval = resumeInterval;
+    // Removed hidden-page auto-resume to avoid unwanted restarts on Android
     
     // Start playing
     isLooping = true;

@@ -41,6 +41,44 @@
   width: 100%;
   max-width: 100%;
 }
+
+/* Dark mode refinement for Mode/Difficulty controls: no white text, no grey backgrounds */
+/* Make audio cards visually white with black text (cancel global invert within the card) */
+html.dark .audio-card {
+  filter: invert(1) hue-rotate(180deg) !important; /* cancel global invert */
+  background: #ffffff !important;
+  color: #000000 !important;
+  border-color: #e5e7eb !important;
+}
+
+/* Inputs/selects/textareas inside card: white bg, black text */
+html.dark .audio-card .audio-select,
+html.dark .audio-card input,
+html.dark .audio-card textarea {
+  background: #ffffff !important;
+  color: #000000 !important;
+  border-color: #e5e7eb !important;
+}
+
+/* Labels and small text inside controls: black */
+html.dark .audio-card .audio-actions span,
+html.dark .audio-card .audio-actions label,
+html.dark .audio-card .audio-actions option {
+  color: #000000 !important;
+}
+
+/* Buttons inside card: white bg, black text */
+html.dark .audio-card .audio-btn,
+html.dark .audio-card .audio-mini-btn {
+  background: #ffffff !important;
+  color: #000000 !important;
+  border-color: #e5e7eb !important;
+}
+
+/* Rows/list items inside card */
+html.dark .audio-card .audio-row {
+  background: #ffffff !important;
+}
 .audio-actions { 
   margin-top: 8px; 
   display: flex; 

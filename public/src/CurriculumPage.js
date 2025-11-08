@@ -631,7 +631,9 @@ Format the response clearly and structured, using markdown if helpful.`;
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>
-                        {getBlankedSentence(phrase.korean_text, phrase.blank_word_indices || (phrase.blank_word_index !== null && phrase.blank_word_index !== undefined ? [phrase.blank_word_index] : []))}
+                        <span className="ko-text">
+                          {getBlankedSentence(phrase.korean_text, phrase.blank_word_indices || (phrase.blank_word_index !== null && phrase.blank_word_index !== undefined ? [phrase.blank_word_index] : []))}
+                        </span>
                       </div>
                       <div style={{ color: '#666', marginBottom: 8 }}>{phrase.english_text}</div>
                       <div style={{ fontSize: 12, color: '#999' }}>

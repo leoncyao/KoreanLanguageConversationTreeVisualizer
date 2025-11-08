@@ -5,6 +5,16 @@ import App from './App';
 import { initBackgroundAudio } from './backgroundAudio';
 import { setPrefetchQueueSize } from './audioTTS';
 
+// Apply persisted theme early to avoid flash; default to dark
+try {
+  const savedTheme = localStorage.getItem('app_theme') || 'dark';
+  if (savedTheme === 'dark') {
+    document.documentElement.classList.add('dark');
+  } else {
+    document.documentElement.classList.remove('dark');
+  }
+} catch (_) {}
+
 // Initialize background audio system for Android Brave/Chrome
 initBackgroundAudio();
 

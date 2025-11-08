@@ -219,6 +219,29 @@ function CurriculumPracticePage() {
     }
   }, []);
 
+  // Build full Korean sentence by replacing [BLANK] with the original words
+  const getFullKoreanSentence = useCallback(() => {
+    if (!blankPhrase) return '';
+    const words = String(blankPhrase.korean || '').split(' ');
+    let bi = 0;
+    return words.map(w => {
+      if (w === '[BLANK]') {
+        const word = blankPhrase.blanks[bi] || '';
+        bi++;
+        return word;
+      }
+      return w;
+    }).join(' ');
+  }, [blankPhrase]);
+
+  // Speak the full Korean sentence (with blanks filled) three times
+  const handleSpeakFullThreeTimes = useCallback(() => {
+    try { const synth = window.speechSynthesis; if (synth) synth.cancel(); } catch (_) {}
+    const full = getFullKoreanSentence();
+    if (!full) return;
+    speakText(full, null, 3);
+  }, [getFullKoreanSentence, speakText]);
+
   // Load all curriculum phrases on mount
   const loadAllPhrases = useCallback(async () => {
     try {
@@ -817,17 +840,21 @@ Keep it concise and structured, focusing on helping someone understand how the s
   const koreanParts = blankPhrase.korean.split('[BLANK]');
   const numBlanks = blankPhrase.blanks?.length || 0;
 
-  // Calculate progress
-  const progressPercentage = allPhrases.length > 0 ? (usedPhraseIds.length / allPhrases.length) * 100 : 0;
+  // Calculate progress over the active session subset (defaults to all if session not set)
+  const activeTotal = (sessionPhrases && sessionPhrases.length) ? sessionPhrases.length : allPhrases.length;
+  const activeUsed = (sessionPhrases && sessionPhrases.length)
+    ? usedPhraseIds.filter((id) => sessionPhrases.some((p) => p.id === id)).length
+    : usedPhraseIds.length;
+  const progressPercentage = activeTotal > 0 ? (activeUsed / activeTotal) * 100 : 0;
 
   return (
     <div className="sentence-box">
-      {allPhrases.length > 0 && (
+      {(allPhrases.length > 0 || (sessionPhrases && sessionPhrases.length > 0)) && (
         <div style={{ marginBottom: 16, padding: '10px', background: '#f5f5f5', border: '1px solid #ddd', borderRadius: 6 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
             <span style={{ fontSize: 13, color: '#666', fontWeight: 600 }}>Curriculum Progress</span>
             <span style={{ fontSize: 13, color: '#333', fontWeight: 600 }}>
-              {usedPhraseIds.length} / {allPhrases.length} phrases
+              {activeUsed} / {activeTotal} phrases (session)
             </span>
           </div>
           <div style={{ width: '100%', height: 12, background: '#e0e0e0', borderRadius: 6, overflow: 'hidden' }}>
@@ -913,6 +940,14 @@ Keep it concise and structured, focusing on helping someone understand how the s
           className="regenerate-button"
         >
           Skip
+        </button>
+        <button 
+          type="button"
+          className="regenerate-button"
+          onClick={handleSpeakFullThreeTimes}
+          title="Speak full Korean sentence three times"
+        >
+          Speak x3 (KO)
         </button>
       </div>
       <div className="sentence-box" style={{ textAlign: 'left', marginTop: 8 }}>

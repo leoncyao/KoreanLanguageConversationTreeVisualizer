@@ -7,7 +7,7 @@ import ChatPage from './ChatPage';
 import StatsPage from './StatsPage';
 import GrammarPage from './GrammarPage';
 import PronunciationPage from './PronunciationPage';
-import LearningModesPage from './LearningModesPage';
+import AudioLearningPage from './AudioLearningPage';
 import CurriculumPage from './CurriculumPage';
 import CurriculumPracticePage from './CurriculumPracticePage';
 import JournalPage from './JournalPage';
@@ -26,7 +26,7 @@ function App() {
         <Route path="/stats" element={<StatsPage />} />
         <Route path="/grammar" element={<GrammarPage />} />
         <Route path="/pronunciation" element={<PronunciationPage />} />
-        <Route path="/quiz-mode" element={<LearningModesPage />} />
+        <Route path="/quiz-mode" element={<AudioLearningPage />} />
         <Route path="/curriculum" element={<CurriculumPage />} />
         <Route path="/curriculum-practice" element={<CurriculumPracticePage />} />
         <Route path="/journal" element={<JournalPage />} />

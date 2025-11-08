@@ -116,6 +116,9 @@
   font-size: 0.9rem;
 }
 
+/* Dark theme explicit color fixes for navbar surfaces (works alongside global invert) */
+/* Dark mode uses global invert; no per-component overrides needed here. */
+
 .mute-button {
   padding: 0.5rem 0.75rem;
   border: 1px solid #ddd;
