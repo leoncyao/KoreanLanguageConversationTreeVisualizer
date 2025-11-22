@@ -1,13 +1,20 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import './App.css';
+import './styles/App.css';
 import App from './App';
 import { initBackgroundAudio } from './backgroundAudio';
 import { setPrefetchQueueSize } from './audioTTS';
 
-// Apply persisted theme early to avoid flash; default to dark
+// Apply persisted theme early to avoid flash; default: light on desktop, dark on mobile
 try {
-  const savedTheme = localStorage.getItem('app_theme') || 'dark';
+  const saved = localStorage.getItem('app_theme');
+  // Basic mobile detection: coarse pointer or common UA substrings
+  const prefersMobile = (typeof window !== 'undefined' && (
+    (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
+    /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '')
+  ));
+  const defaultTheme = prefersMobile ? 'dark' : 'light';
+  const savedTheme = saved || defaultTheme;
   if (savedTheme === 'dark') {
     document.documentElement.classList.add('dark');
   } else {

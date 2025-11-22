@@ -1,6 +1,7 @@
 const Database = require('./database');
 const { parseKoreanSentence } = require('./korean_parser');
 const { generateVerbTenses } = require('./verb_conjugator');
+const { convertNumbersInKoreanText } = require('./number_converter');
 
 // API to correct/translate a user-provided Korean message
 async function handleTranslate(req, res) {
@@ -58,9 +59,14 @@ async function handleTranslate(req, res) {
       }
 
       const result = await response.json();
-      const corrected = (result && result.choices && result.choices[0] && result.choices[0].message && result.choices[0].message.content)
+      let corrected = (result && result.choices && result.choices[0] && result.choices[0].message && result.choices[0].message.content)
         ? String(result.choices[0].message.content).trim()
         : '';
+
+      // Convert numbers to Korean words if the output is Korean
+      if (corrected && /[가-힣]/.test(corrected)) {
+        corrected = convertNumbersInKoreanText(corrected, inputText);
+      }
 
       console.log('Corrected response:', corrected);
 

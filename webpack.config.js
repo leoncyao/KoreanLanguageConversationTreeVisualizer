@@ -40,11 +40,11 @@ module.exports = {
   plugins: [
     new webpack.DefinePlugin({
       'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'development'),
-      // Use actual backend URL for cross-device access (mobile, etc.)
-      // Default to http://99.230.251.252:5001 for dev (port 5001), :5000 for prod
-      // When accessing directly via backend (not webpack dev server), API_BASE_URL must be set
+      // Use relative URLs (empty string) when using webpack dev server (proxy handles it)
+      // Use absolute URL only if explicitly set via environment variable
+      // For cross-device access, set API_BASE_URL environment variable to the backend URL
       'process.env.API_BASE_URL': JSON.stringify(
-        process.env.API_BASE_URL || (isDev ? backendUrl : '')
+        process.env.API_BASE_URL || ''
       ),
     }),
     new HtmlWebpackPlugin({

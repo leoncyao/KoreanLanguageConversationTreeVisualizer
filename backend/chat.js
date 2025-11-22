@@ -1,3 +1,5 @@
+const { convertNumbersInKoreanText } = require('./number_converter');
+
 // Route to handle prompts and return Groq responses
 async function handleChat(req, res) {
   console.log('POST /api/chat request received.'); // Log request
@@ -38,7 +40,12 @@ async function handleChat(req, res) {
     }
 
     const data = await groqResponse.json();
-    const outputText = data.choices?.[0]?.message?.content || '';
+    let outputText = data.choices?.[0]?.message?.content || '';
+
+    // Convert numbers to Korean words if the response contains Korean characters
+    if (outputText && /[가-힣]/.test(outputText)) {
+      outputText = convertNumbersInKoreanText(outputText, prompt);
+    }
 
     console.log('POST /api/chat successful. Sending Groq response.'); // Log success
     res.json({

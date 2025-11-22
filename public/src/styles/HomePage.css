@@ -80,14 +80,6 @@
   visibility: visible;
 }
 
-.feedback:contains("Correct!") {
-  color: #27ae60;
-}
-
-.feedback:contains("Incorrect") {
-  color: #e74c3c;
-}
-
 .correct-count {
   font-size: 1rem;
   color: #555;
@@ -237,3 +229,7 @@
   margin: 10px 0;
   font-size: 1rem;
 }
+
+
+
+

@@ -1,31 +1,25 @@
-.App {
-  text-align: center;
-}
-
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  font-size: calc(10px + 2vmin);
-  color: white;
-}
-
-/* Dark mode (default). We use an invert trick for broad coverage across inline styles. */
+/* Moved from src/App.css */
 html,
 body,
 #root {
   min-height: 100%;
 }
 
+/* Add left padding to account for left sidebar */
+body {
+  padding-left: 150px;
+}
+
+@media (max-width: 768px) {
+  body {
+    padding-left: 0; /* No padding on mobile when sidebar is hidden by default */
+  }
+}
 html.dark {
   color-scheme: dark;
   /* Invert most colors to simulate dark theme for inline-styled components */
   filter: invert(1) hue-rotate(180deg);
 }
-
 /* Cancel inversion for media and explicit opt-outs */
 html.dark img,
 html.dark video,
@@ -34,17 +28,13 @@ html.dark iframe,
 html.dark .no-invert {
   filter: invert(1) hue-rotate(180deg) !important;
 }
-
 /* Body/root backgrounds are left default; invert will turn light to dark */
-
 /* Utility: mark any element to keep original colors under dark mode */
 html.dark .no-invert { filter: invert(1) hue-rotate(180deg) !important; }
-
 /* Highlight Korean text distinctly */
 .ko-text {
   color: #2dd4bf; /* teal; inverted in dark mode but remains distinct */
 }
-
 /* Ensure no black text result after invert: override classes that set white text */
 html.dark .start-button,
 html.dark .generate-button,
@@ -54,13 +44,15 @@ html.dark .clear-button {
   /* Pre-inverted dark so output appears light under global invert */
   color: #111 !important;
 }
-
 /* Global text safety: force all text to pre-inverted dark so it renders light after invert */
 html.dark,
 html.dark body,
 html.dark body * {
   color: #111 !important;
 }
-
 /* Restore link tint for readability under global override */
 html.dark a { color: #035efc !important; }
+
+
+
+

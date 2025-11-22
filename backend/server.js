@@ -13,14 +13,15 @@ const { handleChat } = require('./chat');
 const { handleGetSentences, handleCorrectSentence } = require('./sentences');
 const { handleTranslate } = require('./translate');
 const { handleGenerateVariations } = require('./generate');
-const { handleTTS, handleTTSBatch } = require('./tts');
+const { handleTTS, handleTTSBatch, handleTTSConversation, handleTTSLevel3 } = require('./tts');
 const {
   handleGetCurriculumPhrases,
   handleGetRandomCurriculumPhrase,
   handleAddCurriculumPhrase,
   handleUpdateCurriculumPhrase,
   handleDeleteCurriculumPhrase,
-  handleUpdateCurriculumPhraseStats
+  handleUpdateCurriculumPhraseStats,
+  handleArchiveCurriculumPhrase
 } = require('./curriculum');
 
 const app = express();
@@ -94,6 +95,164 @@ app.post('/api/translate', handleTranslate);
 app.post('/api/generate-variations', handleGenerateVariations);
 app.post('/api/tts', handleTTS);
 app.post('/api/tts/batch', handleTTSBatch);
+app.post('/api/tts/conversation', handleTTSConversation);
+app.post('/api/tts/level3', handleTTSLevel3);
+
+// Conversations API (synced save/load)
+app.get('/api/conversations', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 100;
+    const list = await db.getConversations(null, limit);
+    res.json(list);
+  } catch (error) {
+    console.error('Error fetching conversations:', error);
+    res.status(500).json({ error: 'Failed to fetch conversations' });
+  }
+});
+
+app.post('/api/conversations', async (req, res) => {
+  try {
+    const { title, items } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'items array required' });
+    }
+    const id = await db.addConversation(null, String(title || 'Untitled'), items);
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error('Error saving conversation:', error);
+    res.status(500).json({ error: 'Failed to save conversation' });
+  }
+});
+
+app.put('/api/conversations/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+    const { title, items } = req.body || {};
+    const changes = await db.updateConversation(id, null, { title, items });
+    res.json({ success: true, updated: changes });
+  } catch (error) {
+    console.error('Error updating conversation:', error);
+    res.status(500).json({ error: 'Failed to update conversation' });
+  }
+});
+
+app.delete('/api/conversations/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+    const deleted = await db.deleteConversation(id, null);
+    res.json({ success: true, deleted });
+  } catch (error) {
+    console.error('Error deleting conversation:', error);
+    res.status(500).json({ error: 'Failed to delete conversation' });
+  }
+});
+
+// Mix state API
+app.get('/api/mix', async (req, res) => {
+  try {
+    const state = await db.getMixState();
+    if (state === null) {
+      // Return 404 when no mix exists
+      return res.status(404).json({ error: 'No mix state found' });
+    }
+    res.json(state);
+  } catch (error) {
+    console.error('Error fetching mix state:', error);
+    res.status(500).json({ error: 'Failed to fetch mix state' });
+  }
+});
+
+app.post('/api/mix/generate', async (req, res) => {
+  try {
+    const { mixItems } = req.body || {};
+    if (!Array.isArray(mixItems)) {
+      return res.status(400).json({ error: 'mixItems array required' });
+    }
+    console.log(`Saving mix with ${mixItems.length} items to database`);
+    await db.setMixState(mixItems, 0);
+    // Verify it was saved
+    const saved = await db.getMixState();
+    if (saved && saved.mix_items && saved.mix_items.length === mixItems.length) {
+      console.log(`Mix saved successfully: ${saved.mix_items.length} items`);
+      res.json({ success: true, itemCount: mixItems.length });
+    } else {
+      console.error('Mix save verification failed:', saved);
+      res.status(500).json({ error: 'Failed to verify mix was saved' });
+    }
+  } catch (error) {
+    console.error('Error generating mix:', error);
+    res.status(500).json({ error: 'Failed to generate mix' });
+  }
+});
+
+app.put('/api/mix/update-items', async (req, res) => {
+  try {
+    const { mixItems } = req.body || {};
+    if (!Array.isArray(mixItems)) {
+      return res.status(400).json({ error: 'mixItems array required' });
+    }
+    // Get current state to preserve current_index
+    const currentState = await db.getMixState();
+    const currentIndex = currentState ? (currentState.current_index || 0) : 0;
+    console.log(`Updating mix items (preserving index ${currentIndex})`);
+    await db.setMixState(mixItems, currentIndex);
+    res.json({ success: true, itemCount: mixItems.length });
+  } catch (error) {
+    console.error('Error updating mix items:', error);
+    res.status(500).json({ error: 'Failed to update mix items' });
+  }
+});
+
+app.put('/api/mix/index', async (req, res) => {
+  try {
+    const { index } = req.body || {};
+    if (typeof index !== 'number' || index < 0) {
+      return res.status(400).json({ error: 'valid index required' });
+    }
+    const updated = await db.updateMixIndex(index);
+    res.json({ success: true, updated });
+  } catch (error) {
+    console.error('Error updating mix index:', error);
+    res.status(500).json({ error: 'Failed to update mix index' });
+  }
+});
+
+app.post('/api/mix/increment-first-try', async (req, res) => {
+  try {
+    const updated = await db.incrementMixFirstTryCorrect();
+    res.json({ success: true, updated });
+  } catch (error) {
+    console.error('Error incrementing first try correct:', error);
+    res.status(500).json({ error: 'Failed to increment first try correct' });
+  }
+});
+
+app.post('/api/mix/save-score', async (req, res) => {
+  try {
+    const { totalQuestions, firstTryCorrect } = req.body || {};
+    if (typeof totalQuestions !== 'number' || typeof firstTryCorrect !== 'number') {
+      return res.status(400).json({ error: 'totalQuestions and firstTryCorrect required' });
+    }
+    const saved = await db.saveMixScore(totalQuestions, firstTryCorrect);
+    res.json({ success: true, saved });
+  } catch (error) {
+    console.error('Error saving mix score:', error);
+    res.status(500).json({ error: 'Failed to save mix score' });
+  }
+});
+
+app.get('/api/mix/scores', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 30;
+    const scores = await db.getMixScores(limit);
+    res.json(scores);
+  } catch (error) {
+    console.error('Error fetching mix scores:', error);
+    res.status(500).json({ error: 'Failed to fetch mix scores' });
+  }
+});
 
 // Lightweight health check
 app.get('/api/health', (req, res) => {
@@ -102,6 +261,34 @@ app.get('/api/health', (req, res) => {
     uptime: process.uptime(),
     time: new Date().toISOString()
   });
+});
+
+// Version endpoint for update checking
+app.get('/api/version', (req, res) => {
+  try {
+    const packageJson = require('../package.json');
+    // Read Service Worker version from sw.js file
+    const swPath = path.join(__dirname, '..', 'public', 'sw.js');
+    let swVersion = 'v1.0.1'; // Default
+    try {
+      const swContent = fs.readFileSync(swPath, 'utf8');
+      const versionMatch = swContent.match(/const VERSION = ['"]([^'"]+)['"]/);
+      if (versionMatch) {
+        swVersion = versionMatch[1];
+      }
+    } catch (_) {
+      // Use default if file can't be read
+    }
+    
+    res.json({
+      appVersion: packageJson.version,
+      serviceWorkerVersion: swVersion,
+      buildDate: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting version:', error);
+    res.status(500).json({ error: 'Failed to get version' });
+  }
 });
 
 // Journal API routes
@@ -226,15 +413,33 @@ app.post('/api/words/check-learned', async (req, res) => {
 // Update tags for a specific word by type and korean
 app.post('/api/words/tags', async (req, res) => {
   try {
-    const { type, korean, is_favorite, is_learning, is_learned } = req.body || {};
+    const { type, korean, is_favorite, is_learning, is_learned, priority_level } = req.body || {};
     const validTypes = ['noun', 'proper-noun', 'verb', 'adjective', 'adverb', 'pronoun', 'conjunction', 'particle'];
     if (!type || !validTypes.includes(type)) return res.status(400).json({ error: 'invalid type' });
     if (!korean || typeof korean !== 'string') return res.status(400).json({ error: 'korean is required' });
-    const changes = await db.updateWordTags(type, korean, { is_favorite, is_learning, is_learned });
+    const changes = await db.updateWordTags(type, korean, { is_favorite, is_learning, is_learned, priority_level });
     res.json({ success: true, updated: changes });
   } catch (error) {
     console.error('Error updating word tags:', error);
     res.status(500).json({ error: 'Failed to update word tags' });
+  }
+});
+
+// Update word fields (korean, english) for a specific word by type and korean
+app.post('/api/words/update', async (req, res) => {
+  try {
+    const { type, korean: oldKorean, newKorean, english } = req.body || {};
+    const validTypes = ['noun', 'proper-noun', 'verb', 'adjective', 'adverb', 'pronoun', 'conjunction', 'particle'];
+    if (!type || !validTypes.includes(type)) return res.status(400).json({ error: 'invalid type' });
+    if (!oldKorean || typeof oldKorean !== 'string') return res.status(400).json({ error: 'korean (old) is required' });
+    const changes = await db.updateWordFields(type, oldKorean, { korean: newKorean, english });
+    if (changes === 0) {
+      return res.status(404).json({ error: 'Word not found' });
+    }
+    res.json({ success: true, updated: changes });
+  } catch (error) {
+    console.error('Error updating word fields:', error);
+    res.status(500).json({ error: 'Failed to update word fields' });
   }
 });
 
@@ -441,6 +646,7 @@ app.post('/api/curriculum-phrases', handleAddCurriculumPhrase);
 app.put('/api/curriculum-phrases/:id', handleUpdateCurriculumPhrase);
 app.delete('/api/curriculum-phrases/:id', handleDeleteCurriculumPhrase);
 app.post('/api/curriculum-phrases/:id/correct', handleUpdateCurriculumPhraseStats);
+app.post('/api/curriculum-phrases/:id/archive', handleArchiveCurriculumPhrase);
 
 // Initialize database and start server
 async function startServer() {

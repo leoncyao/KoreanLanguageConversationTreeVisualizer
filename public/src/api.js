@@ -54,6 +54,11 @@ export const api = {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ type, korean, ...tags })
   }),
+  updateWordFields: (type, oldKorean, fields) => fetch(`${API_BASE_URL}/api/words/update`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, korean: oldKorean, ...fields })
+  }),
   checkWordLearned: (word, threshold = 20) => fetch(`${API_BASE_URL}/api/words/check-learned`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -83,12 +88,82 @@ export const api = {
 
   // Curriculum phrases API
   getCurriculumPhrases: () => fetch(`${API_BASE_URL}/api/curriculum-phrases`),
-  getRandomCurriculumPhrase: () => fetch(`${API_BASE_URL}/api/curriculum-phrases/random`),
-  addCurriculumPhrase: (phrase) => fetch(`${API_BASE_URL}/api/curriculum-phrases`, {
+  getRandomCurriculumPhrase: async (timeout = 8000, retries = 1) => {
+    const url = `${API_BASE_URL}/api/curriculum-phrases/random`;
+    
+    // Helper to fetch with timeout (using Promise.race for compatibility)
+    const fetchWithTimeout = async (url, timeoutMs) => {
+      // Check if AbortController is available
+      if (typeof AbortController !== 'undefined') {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const response = await fetch(url, { signal: controller.signal });
+          clearTimeout(timeoutId);
+          return response;
+        } catch (error) {
+          clearTimeout(timeoutId);
+          if (error.name === 'AbortError' || error.name === 'AbortError') {
+            throw new Error(`Request timeout after ${timeoutMs}ms`);
+          }
+          throw error;
+        }
+      } else {
+        // Fallback for browsers without AbortController
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error(`Request timeout after ${timeoutMs}ms`)), timeoutMs)
+        );
+        return Promise.race([fetch(url), timeoutPromise]);
+      }
+    };
+    
+    // Retry logic with exponential backoff
+    let lastError;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const response = await fetchWithTimeout(url, timeout);
+        if (response.ok) {
+          return response;
+        }
+        // For 504/502/503/408, retry if we have attempts left
+        if ((response.status === 504 || response.status === 502 || response.status === 503 || response.status === 408) && attempt < retries) {
+          lastError = new Error(`HTTP ${response.status}: ${response.statusText}`);
+          // Exponential backoff: wait 500ms, 1000ms
+          await new Promise(resolve => setTimeout(resolve, 500 * Math.pow(2, attempt)));
+          continue;
+        }
+        // For other errors, return immediately
+        return response;
+      } catch (error) {
+        lastError = error;
+        // Only retry on timeout/network errors if we have attempts left
+        const isRetryable = error.message && (
+          error.message.includes('timeout') || 
+          error.message.includes('Failed to fetch') || 
+          error.name === 'TypeError' ||
+          error.name === 'NetworkError'
+        );
+        if (attempt < retries && isRetryable) {
+          // Exponential backoff: wait 500ms, 1000ms
+          await new Promise(resolve => setTimeout(resolve, 500 * Math.pow(2, attempt)));
+          continue;
+        }
+        // If no more retries or not retryable, throw
+        throw error;
+      }
+    }
+    throw lastError || new Error('Failed to fetch curriculum phrase after retries');
+  },
+  addCurriculumPhrase: (phrase) => {
+    const now = new Date();
+    const createdAt = now.toISOString ? now.toISOString() : String(Date.now());
+    const payload = { created_at: createdAt, ...(phrase || {}) };
+    return fetch(`${API_BASE_URL}/api/curriculum-phrases`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(phrase)
-  }),
+      body: JSON.stringify(payload)
+    });
+  },
   updateCurriculumPhrase: (id, phrase) => fetch(`${API_BASE_URL}/api/curriculum-phrases/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -102,6 +177,11 @@ export const api = {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ correct })
   }),
+  archiveCurriculumPhrase: (id, isArchived) => fetch(`${API_BASE_URL}/api/curriculum-phrases/${id}/archive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ is_archived: isArchived })
+  }),
 
   // Journal API
   saveJournalEntry: (englishText, koreanText, date) => fetch(`${API_BASE_URL}/api/journal`, {
@@ -112,6 +192,42 @@ export const api = {
   getJournalDays: (limit = 60) => fetch(`${API_BASE_URL}/api/journal/days?limit=${limit}`),
   getJournalEntriesByDate: (date) => fetch(`${API_BASE_URL}/api/journal?date=${encodeURIComponent(date)}`),
   
+  // Conversations API
+  deleteConversation: (id) => fetch(`${API_BASE_URL}/api/conversations/${id}`, {
+    method: 'DELETE'
+  }),
+
+  // Mix API
+  getMixState: () => fetch(`${API_BASE_URL}/api/mix`),
+  generateMix: (mixItems) => fetch(`${API_BASE_URL}/api/mix/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mixItems })
+  }),
+  updateMixItems: (mixItems) => fetch(`${API_BASE_URL}/api/mix/update-items`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mixItems })
+  }),
+  updateMixIndex: (index) => fetch(`${API_BASE_URL}/api/mix/index`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ index })
+  }),
+  incrementMixFirstTryCorrect: () => fetch(`${API_BASE_URL}/api/mix/increment-first-try`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  }),
+  saveMixScore: (totalQuestions, firstTryCorrect) => fetch(`${API_BASE_URL}/api/mix/save-score`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ totalQuestions, firstTryCorrect })
+  }),
+  getMixScores: (limit = 30) => fetch(`${API_BASE_URL}/api/mix/scores?limit=${limit}`),
+
+  // Version & Updates
+  getVersion: () => fetch(`${API_BASE_URL}/api/version`),
+
   // Health
   health: () => fetch(`${API_BASE_URL}/api/health`)
 };

@@ -1,5 +1,6 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const { normalizeTypeToCode } = require('./pos');
 
 class Database {
   constructor() {
@@ -226,6 +227,38 @@ class Database {
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_journal_entries_date ON journal_entries(entry_date);
+
+        -- Conversation sets table (for synced save/load)
+        CREATE TABLE IF NOT EXISTS conversations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          owner TEXT, -- optional: client-provided id/key to scope lists
+          title TEXT NOT NULL,
+          items_json TEXT NOT NULL, -- JSON array of { korean, english }
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversations_owner_created ON conversations(owner, created_at DESC);
+
+        -- Mix mode table (stores current mix state and index)
+        CREATE TABLE IF NOT EXISTS mix_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          current_index INTEGER DEFAULT 0,
+          mix_items_json TEXT NOT NULL, -- JSON array of mix items with type and data
+          first_try_correct_count INTEGER DEFAULT 0, -- Number of questions answered correctly on first try (without show answer)
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- Mix scores table (stores daily scores for completed mixes)
+        CREATE TABLE IF NOT EXISTS mix_scores (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          score_date DATE NOT NULL, -- Date of the score (YYYY-MM-DD)
+          total_questions INTEGER NOT NULL, -- Total questions in the mix
+          first_try_correct INTEGER NOT NULL, -- Number answered correctly on first try
+          completed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(score_date) -- One score per day
+        );
+        CREATE INDEX IF NOT EXISTS idx_mix_scores_date ON mix_scores(score_date DESC);
       `;
 
       this.db.exec(createTablesSQL, (err) => {
@@ -244,6 +277,167 @@ class Database {
               resolve();
             });
         }
+      });
+    });
+  }
+
+  // Conversations (save/load synced)
+  async addConversation(owner, title, items) {
+    return new Promise((resolve, reject) => {
+      const sql = `
+        INSERT INTO conversations (owner, title, items_json, created_at, updated_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `;
+      const itemsJson = JSON.stringify(Array.isArray(items) ? items : []);
+      this.db.run(sql, [owner || null, title || 'Untitled', itemsJson], function(err) {
+        if (err) return reject(err);
+        resolve(this.lastID);
+      });
+    });
+  }
+
+  async getConversations(owner, limit = 100) {
+    return new Promise((resolve, reject) => {
+      const sql = owner
+        ? `SELECT id, owner, title, items_json, created_at, updated_at FROM conversations WHERE owner = ? ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`
+        : `SELECT id, owner, title, items_json, created_at, updated_at FROM conversations ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`;
+      const params = owner ? [owner, limit] : [limit];
+      this.db.all(sql, params, (err, rows) => {
+        if (err) return reject(err);
+        try {
+          const list = (rows || []).map(r => ({
+            id: r.id,
+            owner: r.owner,
+            title: r.title,
+            items: JSON.parse(r.items_json || '[]'),
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+          }));
+          resolve(list);
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+  }
+
+  async updateConversation(id, owner, { title, items }) {
+    return new Promise((resolve, reject) => {
+      const setParts = [];
+      const params = [];
+      if (typeof title === 'string') {
+        setParts.push('title = ?');
+        params.push(title);
+      }
+      if (items !== undefined) {
+        setParts.push('items_json = ?');
+        params.push(JSON.stringify(Array.isArray(items) ? items : []));
+      }
+      setParts.push('updated_at = CURRENT_TIMESTAMP');
+      if (setParts.length === 0) return resolve(0);
+      const whereOwner = owner ? ' AND owner = ?' : '';
+      const sql = `UPDATE conversations SET ${setParts.join(', ')} WHERE id = ?${whereOwner}`;
+      params.push(id);
+      if (owner) params.push(owner);
+      this.db.run(sql, params, function(err) {
+        if (err) return reject(err);
+        resolve(this.changes || 0);
+      });
+    });
+  }
+
+  // Mix state methods
+  async getMixState() {
+    return new Promise((resolve, reject) => {
+      this.db.get('SELECT current_index, mix_items_json, created_at, updated_at FROM mix_state WHERE id = 1', [], (err, row) => {
+        if (err) return reject(err);
+        if (!row) {
+          // No mix state exists yet
+          resolve(null);
+          return;
+        }
+        try {
+          resolve({
+            current_index: row.current_index || 0,
+            mix_items: JSON.parse(row.mix_items_json || '[]'),
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+          });
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+  }
+
+  async setMixState(mixItems, currentIndex = 0) {
+    return new Promise((resolve, reject) => {
+      const itemsJson = JSON.stringify(Array.isArray(mixItems) ? mixItems : []);
+      // Use INSERT OR REPLACE since id is always 1
+      // Preserve first_try_correct_count if it exists, otherwise reset to 0
+      const sql = `
+        INSERT OR REPLACE INTO mix_state (id, current_index, mix_items_json, first_try_correct_count, created_at, updated_at)
+        VALUES (1, ?, ?, COALESCE((SELECT first_try_correct_count FROM mix_state WHERE id = 1), 0), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `;
+      this.db.run(sql, [currentIndex || 0, itemsJson], function(err) {
+        if (err) return reject(err);
+        resolve(this.lastID);
+      });
+    });
+  }
+
+  async updateMixIndex(newIndex) {
+    return new Promise((resolve, reject) => {
+      const sql = `UPDATE mix_state SET current_index = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`;
+      this.db.run(sql, [newIndex], function(err) {
+        if (err) return reject(err);
+        resolve(this.changes > 0);
+      });
+    });
+  }
+
+  async incrementMixFirstTryCorrect() {
+    return new Promise((resolve, reject) => {
+      const sql = `UPDATE mix_state SET first_try_correct_count = COALESCE(first_try_correct_count, 0) + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1`;
+      this.db.run(sql, [], function(err) {
+        if (err) return reject(err);
+        resolve(this.changes > 0);
+      });
+    });
+  }
+
+  async saveMixScore(totalQuestions, firstTryCorrect) {
+    return new Promise((resolve, reject) => {
+      const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+      const sql = `
+        INSERT OR REPLACE INTO mix_scores (score_date, total_questions, first_try_correct, completed_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      `;
+      this.db.run(sql, [today, totalQuestions, firstTryCorrect], function(err) {
+        if (err) return reject(err);
+        resolve(this.lastID);
+      });
+    });
+  }
+
+  async getMixScores(limit = 30) {
+    return new Promise((resolve, reject) => {
+      const sql = `SELECT * FROM mix_scores ORDER BY score_date DESC LIMIT ?`;
+      this.db.all(sql, [limit], (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      });
+    });
+  }
+
+  async deleteConversation(id, owner) {
+    return new Promise((resolve, reject) => {
+      const whereOwner = owner ? ' AND owner = ?' : '';
+      const sql = `DELETE FROM conversations WHERE id = ?${whereOwner}`;
+      const params = owner ? [id, owner] : [id];
+      this.db.run(sql, params, function(err) {
+        if (err) return reject(err);
+        resolve(this.changes || 0);
       });
     });
   }
@@ -364,20 +558,52 @@ class Database {
 
   // Curriculum phrases methods
   async getAllCurriculumPhrases() {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
+      if (!this.db) {
+        return reject(new Error('Database not initialized'));
+      }
+      
+      // Ensure columns exist (migration)
+      try {
+        const cols = await new Promise((resolve, reject) => {
+          this.db.all(`PRAGMA table_info(curriculum_phrases)`, (err, cols) => {
+            if (err) reject(err);
+            else resolve(cols || []);
+          });
+        });
+        const colNames = cols.map(c => c.name);
+        if (!colNames.includes('word_types_json')) {
+          await new Promise((resolve2) => {
+            this.db.run(`ALTER TABLE curriculum_phrases ADD COLUMN word_types_json TEXT`, () => resolve2());
+          });
+        }
+        if (!colNames.includes('word_type_codes_json')) {
+          await new Promise((resolve2) => {
+            this.db.run(`ALTER TABLE curriculum_phrases ADD COLUMN word_type_codes_json TEXT`, () => resolve2());
+          });
+        }
+        if (!colNames.includes('is_archived')) {
+          await new Promise((resolve2) => {
+            this.db.run(`ALTER TABLE curriculum_phrases ADD COLUMN is_archived INTEGER DEFAULT 0`, () => resolve2());
+          });
+        }
+      } catch (migrationErr) {
+        console.warn('Migration check failed (columns may already exist):', migrationErr);
+      }
+      
       const sql = `
         SELECT id, korean_text, english_text, correct_answers_json, grammar_breakdown_json,
-               times_correct, times_incorrect, created_at
+               times_correct, times_incorrect, created_at, COALESCE(is_archived, 0) as is_archived
         FROM curriculum_phrases
-        ORDER BY created_at DESC
+        ORDER BY created_at ASC
       `;
       
       this.db.all(sql, async (err, rows) => {
         if (err) {
           reject(err);
         } else {
-            try {
-              const phrases = await Promise.all(rows.map(async (row) => {
+          try {
+            const phrases = await Promise.all(rows.map(async (row) => {
               // Get blank indices from separate table
               const blanks = await new Promise((resolve, reject) => {
                 this.db.all(
@@ -390,16 +616,94 @@ class Database {
                 );
               });
               
-              const blankWordIndices = blanks.map(b => b.word_index);
-              const correctAnswers = blanks.map(b => b.correct_answer).filter(a => a);
-              const blankWordTypes = blanks.map(b => b.word_type).filter(t => t);
+              const blankWordIndices = blanks.map(b => b.word_index).filter(idx => idx !== null && idx !== undefined);
+              const correctAnswers = blanks.map(b => b.correct_answer).filter(a => a != null);
+              const blankWordTypes = blanks.map(b => b.word_type).filter(t => t != null);
+              
+              // Safely parse JSON fields
+              let parsedCorrectAnswers = [];
+              if (correctAnswers.length > 0) {
+                parsedCorrectAnswers = correctAnswers;
+              } else if (row.correct_answers_json) {
+                try {
+                  parsedCorrectAnswers = JSON.parse(row.correct_answers_json);
+                  if (!Array.isArray(parsedCorrectAnswers)) {
+                    parsedCorrectAnswers = [];
+                  }
+                } catch (e) {
+                  console.warn('Failed to parse correct_answers_json:', e);
+                  parsedCorrectAnswers = [];
+                }
+              }
+              
+              let grammarBreakdown = null;
+              if (row.grammar_breakdown_json) {
+                try {
+                  grammarBreakdown = JSON.parse(row.grammar_breakdown_json);
+                } catch (e) {
+                  console.warn('Failed to parse grammar_breakdown_json:', e);
+                  grammarBreakdown = null;
+                }
+              }
+              
+              // Fetch word_types and word_type_codes using enum system (codes as primary)
+              let wordTypes = null;
+              let wordTypeCodes = null;
+              try {
+                const codeRow = await new Promise((resolve, reject) => {
+                  this.db.get(`SELECT word_type_codes_json FROM curriculum_phrases WHERE id = ?`, [row.id], (err, r) => {
+                    if (err) reject(err);
+                    else resolve(r);
+                  });
+                });
+                if (codeRow && codeRow.word_type_codes_json) {
+                  try {
+                    wordTypeCodes = JSON.parse(codeRow.word_type_codes_json);
+                    if (!Array.isArray(wordTypeCodes)) wordTypeCodes = null;
+                    // Convert codes to types for backward compatibility
+                    if (wordTypeCodes && wordTypeCodes.length > 0) {
+                      const { codeToType } = require('./pos');
+                      wordTypes = wordTypeCodes.map(codeToType);
+                    }
+                  } catch (e) {
+                    console.warn('Failed to parse word_type_codes_json:', e);
+                  }
+                }
+                
+                // Fallback to string types if codes not available
+                if (!wordTypeCodes || wordTypeCodes.length === 0) {
+                  const typeRow = await new Promise((resolve, reject) => {
+                    this.db.get(`SELECT word_types_json FROM curriculum_phrases WHERE id = ?`, [row.id], (err, r) => {
+                      if (err) reject(err);
+                      else resolve(r);
+                    });
+                  });
+                  if (typeRow && typeRow.word_types_json) {
+                    try {
+                      wordTypes = JSON.parse(typeRow.word_types_json);
+                      if (!Array.isArray(wordTypes)) wordTypes = null;
+                      // Convert types to codes if we have types but not codes
+                      if (wordTypes && wordTypes.length > 0) {
+                        const { normalizeTypeToCode } = require('./pos');
+                        wordTypeCodes = wordTypes.map(normalizeTypeToCode);
+                      }
+                    } catch (e) {
+                      console.warn('Failed to parse word_types_json:', e);
+                    }
+                  }
+                }
+              } catch (e) {
+                console.warn('Error fetching word types/codes:', e);
+              }
               
               return {
                 ...row,
                 blank_word_indices: blankWordIndices,
                 blank_word_types: blankWordTypes,
-                correct_answers: correctAnswers.length > 0 ? correctAnswers : (row.correct_answers_json ? JSON.parse(row.correct_answers_json) : []),
-                grammar_breakdown: row.grammar_breakdown_json ? JSON.parse(row.grammar_breakdown_json) : null
+                correct_answers: parsedCorrectAnswers,
+                grammar_breakdown: grammarBreakdown,
+                word_types: wordTypes,
+                word_type_codes: wordTypeCodes
               };
             }));
             resolve(phrases);
@@ -412,56 +716,192 @@ class Database {
   }
 
   async getRandomCurriculumPhrase() {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
+      if (!this.db) {
+        return reject(new Error('Database not initialized'));
+      }
+      
+      // Ensure columns exist (migration)
+      try {
+        const cols = await new Promise((resolve, reject) => {
+          this.db.all(`PRAGMA table_info(curriculum_phrases)`, (err, cols) => {
+            if (err) reject(err);
+            else resolve(cols || []);
+          });
+        });
+        const colNames = cols.map(c => c.name);
+        if (!colNames.includes('word_types_json')) {
+          await new Promise((resolve2) => {
+            this.db.run(`ALTER TABLE curriculum_phrases ADD COLUMN word_types_json TEXT`, () => resolve2());
+          });
+        }
+        if (!colNames.includes('word_type_codes_json')) {
+          await new Promise((resolve2) => {
+            this.db.run(`ALTER TABLE curriculum_phrases ADD COLUMN word_type_codes_json TEXT`, () => resolve2());
+          });
+        }
+        if (!colNames.includes('is_archived')) {
+          await new Promise((resolve2) => {
+            this.db.run(`ALTER TABLE curriculum_phrases ADD COLUMN is_archived INTEGER DEFAULT 0`, () => resolve2());
+          });
+        }
+      } catch (migrationErr) {
+        console.warn('Migration check failed (columns may already exist):', migrationErr);
+      }
+      
+      // Build query dynamically based on available columns
+      // Exclude archived phrases from practice
       const sql = `
         SELECT id, korean_text, english_text, correct_answers_json, grammar_breakdown_json,
                times_correct, times_incorrect
         FROM curriculum_phrases
+        WHERE COALESCE(is_archived, 0) = 0
         ORDER BY RANDOM()
         LIMIT 1
       `;
       
       this.db.get(sql, async (err, row) => {
         if (err) {
+          console.error('Error in getRandomCurriculumPhrase query:', err);
           reject(err);
-        } else {
-          if (!row) {
-            resolve(null);
-          } else {
+          return;
+        }
+        
+        if (!row) {
+          resolve(null);
+          return;
+        }
+        
+        try {
+          // Get blank indices from separate table
+          const blanks = await new Promise((resolve, reject) => {
+            if (!this.db) {
+              return reject(new Error('Database not initialized'));
+            }
+            this.db.all(
+              'SELECT word_index, correct_answer, word_type FROM curriculum_phrase_blanks WHERE phrase_id = ? ORDER BY word_index',
+              [row.id],
+              (err, blankRows) => {
+                if (err) {
+                  console.error('Error fetching blanks:', err);
+                  reject(err);
+                } else {
+                  resolve(blankRows || []);
+                }
+              }
+            );
+          });
+          
+          const blankWordIndices = blanks.map(b => b.word_index).filter(idx => idx !== null && idx !== undefined);
+          const correctAnswers = blanks.map(b => b.correct_answer).filter(a => a != null);
+          const blankWordTypes = blanks.map(b => b.word_type).filter(t => t != null);
+          
+          // Safely parse JSON fields
+          let parsedCorrectAnswers = [];
+          if (correctAnswers.length > 0) {
+            parsedCorrectAnswers = correctAnswers;
+          } else if (row.correct_answers_json) {
             try {
-              // Get blank indices from separate table
-              const blanks = await new Promise((resolve, reject) => {
-                this.db.all(
-                  'SELECT word_index, correct_answer, word_type FROM curriculum_phrase_blanks WHERE phrase_id = ? ORDER BY word_index',
-                  [row.id],
-                  (err, blankRows) => {
-                    if (err) reject(err);
-                    else resolve(blankRows || []);
-                  }
-                );
-              });
-              
-              const blankWordIndices = blanks.map(b => b.word_index);
-              const correctAnswers = blanks.map(b => b.correct_answer).filter(a => a);
-              const blankWordTypes = blanks.map(b => b.word_type).filter(t => t);
-              
-              resolve({
-                ...row,
-                blank_word_indices: blankWordIndices,
-                blank_word_types: blankWordTypes,
-                correct_answers: correctAnswers.length > 0 ? correctAnswers : (row.correct_answers_json ? JSON.parse(row.correct_answers_json) : []),
-                grammar_breakdown: row.grammar_breakdown_json ? JSON.parse(row.grammar_breakdown_json) : null
-              });
+              parsedCorrectAnswers = JSON.parse(row.correct_answers_json);
+              if (!Array.isArray(parsedCorrectAnswers)) {
+                parsedCorrectAnswers = [];
+              }
             } catch (e) {
-              reject(e);
+              console.warn('Failed to parse correct_answers_json:', e);
+              parsedCorrectAnswers = [];
             }
           }
+          
+          let grammarBreakdown = null;
+          if (row.grammar_breakdown_json) {
+            try {
+              grammarBreakdown = JSON.parse(row.grammar_breakdown_json);
+            } catch (e) {
+              console.warn('Failed to parse grammar_breakdown_json:', e);
+              grammarBreakdown = null;
+            }
+          }
+          
+          // Fetch word_types and word_type_codes separately (they may not be in SELECT)
+          let wordTypes = null;
+          let wordTypeCodes = null;
+          try {
+            const typeCols = await new Promise((resolve, reject) => {
+              this.db.all(`PRAGMA table_info(curriculum_phrases)`, (err, cols) => {
+                if (err) reject(err);
+                else resolve(cols || []);
+              });
+            });
+            const colNames = typeCols.map(c => c.name);
+            
+            if (colNames.includes('word_type_codes_json')) {
+              // Prefer enum codes (primary source)
+              const codeRow = await new Promise((resolve, reject) => {
+                this.db.get(`SELECT word_type_codes_json FROM curriculum_phrases WHERE id = ?`, [row.id], (err, r) => {
+                  if (err) reject(err);
+                  else resolve(r);
+                });
+              });
+              if (codeRow && codeRow.word_type_codes_json) {
+                try {
+                  wordTypeCodes = JSON.parse(codeRow.word_type_codes_json);
+                  if (!Array.isArray(wordTypeCodes)) wordTypeCodes = null;
+                } catch (e) {
+                  console.warn('Failed to parse word_type_codes_json:', e);
+                }
+              }
+            }
+            
+            if (colNames.includes('word_types_json')) {
+              // Fallback to string types if codes not available
+              if (!wordTypeCodes || wordTypeCodes.length === 0) {
+                const typeRow = await new Promise((resolve, reject) => {
+                  this.db.get(`SELECT word_types_json FROM curriculum_phrases WHERE id = ?`, [row.id], (err, r) => {
+                    if (err) reject(err);
+                    else resolve(r);
+                  });
+                });
+                if (typeRow && typeRow.word_types_json) {
+                  try {
+                    wordTypes = JSON.parse(typeRow.word_types_json);
+                    if (!Array.isArray(wordTypes)) wordTypes = null;
+                    // Convert types to codes if we have types but not codes
+                    if (wordTypes && wordTypes.length > 0 && (!wordTypeCodes || wordTypeCodes.length === 0)) {
+                      const { normalizeTypeToCode } = require('./pos');
+                      wordTypeCodes = wordTypes.map(normalizeTypeToCode);
+                    }
+                  } catch (e) {
+                    console.warn('Failed to parse word_types_json:', e);
+                  }
+                }
+              } else {
+                // We have codes, convert to types for backward compatibility
+                const { codeToType } = require('./pos');
+                wordTypes = wordTypeCodes.map(codeToType);
+              }
+            }
+          } catch (e) {
+            console.warn('Error fetching word types/codes:', e);
+          }
+          
+          resolve({
+            ...row,
+            blank_word_indices: blankWordIndices,
+            blank_word_types: blankWordTypes,
+            correct_answers: parsedCorrectAnswers,
+            grammar_breakdown: grammarBreakdown,
+            word_types: wordTypes,
+            word_type_codes: wordTypeCodes
+          });
+        } catch (e) {
+          console.error('Error processing random curriculum phrase:', e);
+          reject(e);
         }
       });
     });
   }
 
-  async addCurriculumPhrase(koreanText, englishText, blankWordIndices = [], correctAnswers = [], grammarBreakdown = null, blankWordTypes = []) {
+  async addCurriculumPhrase(koreanText, englishText, blankWordIndices = [], correctAnswers = [], grammarBreakdown = null, blankWordTypes = [], wordTypes = null, wordTypeCodes = null) {
     return new Promise(async (resolve, reject) => {
       try {
         // Check if old columns exist (for databases with old schema)
@@ -473,27 +913,81 @@ class Database {
         });
         const colNames = cols.map(c => c.name);
         const hasOldColumns = colNames.includes('blank_word_index');
+        const hasWordTypes = colNames.includes('word_types_json');
+        const hasWordTypeCodes = colNames.includes('word_type_codes_json');
+        if (!hasWordTypes) {
+          try {
+            await new Promise((resolve2) => {
+              this.db.run(`ALTER TABLE curriculum_phrases ADD COLUMN word_types_json TEXT`, () => resolve2());
+            });
+          } catch (_) {
+            // ignore; column may already exist on concurrent migration
+          }
+        }
+        if (!hasWordTypeCodes) {
+          try {
+            await new Promise((resolve2) => {
+              this.db.run(`ALTER TABLE curriculum_phrases ADD COLUMN word_type_codes_json TEXT`, () => resolve2());
+            });
+          } catch (_) {
+            // ignore; column may already exist
+          }
+        }
         
         const correctAnswersJson = JSON.stringify(Array.isArray(correctAnswers) ? correctAnswers : []);
         const grammarBreakdownJson = grammarBreakdown ? JSON.stringify(grammarBreakdown) : null;
+        const wordTypesJson = wordTypes && Array.isArray(wordTypes) ? JSON.stringify(wordTypes) : null;
+        let codes = Array.isArray(wordTypeCodes) ? wordTypeCodes : null;
+        if (!codes && Array.isArray(wordTypes)) {
+          codes = wordTypes.map(normalizeTypeToCode);
+        }
+        const wordTypeCodesJson = codes ? JSON.stringify(codes) : null;
         
         let sql, params;
         if (hasOldColumns) {
           // Old schema has blank_word_index with NOT NULL - provide dummy value (we don't use it)
           // We only store blanks in curriculum_phrase_blanks table
           const dummyBlankIndex = 0; // Dummy value to satisfy NOT NULL constraint
-          sql = `
-            INSERT INTO curriculum_phrases (korean_text, english_text, blank_word_index, correct_answers_json, grammar_breakdown_json)
-            VALUES (?, ?, ?, ?, ?)
-          `;
-          params = [koreanText, englishText, dummyBlankIndex, correctAnswersJson, grammarBreakdownJson];
+          if (hasWordTypes && hasWordTypeCodes) {
+            sql = `
+              INSERT INTO curriculum_phrases (korean_text, english_text, blank_word_index, correct_answers_json, grammar_breakdown_json, word_types_json, word_type_codes_json)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `;
+            params = [koreanText, englishText, dummyBlankIndex, correctAnswersJson, grammarBreakdownJson, wordTypesJson, wordTypeCodesJson];
+          } else if (hasWordTypes) {
+            sql = `
+              INSERT INTO curriculum_phrases (korean_text, english_text, blank_word_index, correct_answers_json, grammar_breakdown_json, word_types_json)
+              VALUES (?, ?, ?, ?, ?, ?)
+            `;
+            params = [koreanText, englishText, dummyBlankIndex, correctAnswersJson, grammarBreakdownJson, wordTypesJson];
+          } else {
+            sql = `
+              INSERT INTO curriculum_phrases (korean_text, english_text, blank_word_index, correct_answers_json, grammar_breakdown_json)
+              VALUES (?, ?, ?, ?, ?)
+            `;
+            params = [koreanText, englishText, dummyBlankIndex, correctAnswersJson, grammarBreakdownJson];
+          }
         } else {
           // New schema without old columns
-          sql = `
-            INSERT INTO curriculum_phrases (korean_text, english_text, correct_answers_json, grammar_breakdown_json)
-            VALUES (?, ?, ?, ?)
-          `;
-          params = [koreanText, englishText, correctAnswersJson, grammarBreakdownJson];
+          if (hasWordTypes && hasWordTypeCodes) {
+            sql = `
+              INSERT INTO curriculum_phrases (korean_text, english_text, correct_answers_json, grammar_breakdown_json, word_types_json, word_type_codes_json)
+              VALUES (?, ?, ?, ?, ?, ?)
+            `;
+            params = [koreanText, englishText, correctAnswersJson, grammarBreakdownJson, wordTypesJson, wordTypeCodesJson];
+          } else if (hasWordTypes) {
+            sql = `
+              INSERT INTO curriculum_phrases (korean_text, english_text, correct_answers_json, grammar_breakdown_json, word_types_json)
+              VALUES (?, ?, ?, ?, ?)
+            `;
+            params = [koreanText, englishText, correctAnswersJson, grammarBreakdownJson, wordTypesJson];
+          } else {
+            sql = `
+              INSERT INTO curriculum_phrases (korean_text, english_text, correct_answers_json, grammar_breakdown_json)
+              VALUES (?, ?, ?, ?)
+            `;
+            params = [koreanText, englishText, correctAnswersJson, grammarBreakdownJson];
+          }
         }
         
         // Capture db reference before callback
@@ -544,7 +1038,7 @@ class Database {
     });
   }
 
-  async updateCurriculumPhrase(id, koreanText, englishText, blankWordIndices = [], correctAnswers = [], grammarBreakdown = null, blankWordTypes = []) {
+  async updateCurriculumPhrase(id, koreanText, englishText, blankWordIndices = [], correctAnswers = [], grammarBreakdown = null, blankWordTypes = [], wordTypes = null, wordTypeCodes = null) {
     return new Promise(async (resolve, reject) => {
       try {
         // Check if old columns exist (for databases with old schema)
@@ -556,28 +1050,86 @@ class Database {
         });
         const colNames = cols.map(c => c.name);
         const hasOldColumns = colNames.includes('blank_word_index');
+        const hasWordTypes = colNames.includes('word_types_json');
+        const hasWordTypeCodes = colNames.includes('word_type_codes_json');
+        if (!hasWordTypes) {
+          try {
+            await new Promise((resolve2) => {
+              this.db.run(`ALTER TABLE curriculum_phrases ADD COLUMN word_types_json TEXT`, () => resolve2());
+            });
+          } catch (_) {
+            // ignore; column may already exist on concurrent migration
+          }
+        }
+        if (!hasWordTypeCodes) {
+          try {
+            await new Promise((resolve2) => {
+              this.db.run(`ALTER TABLE curriculum_phrases ADD COLUMN word_type_codes_json TEXT`, () => resolve2());
+            });
+          } catch (_) {
+            // ignore; column may already exist
+          }
+        }
         
         const correctAnswersJson = JSON.stringify(Array.isArray(correctAnswers) ? correctAnswers : []);
         const grammarBreakdownJson = grammarBreakdown ? JSON.stringify(grammarBreakdown) : null;
+        const wordTypesJson = wordTypes && Array.isArray(wordTypes) ? JSON.stringify(wordTypes) : null;
+        let codes = Array.isArray(wordTypeCodes) ? wordTypeCodes : null;
+        if (!codes && Array.isArray(wordTypes)) {
+          codes = wordTypes.map(normalizeTypeToCode);
+        }
+        const wordTypeCodesJson = codes ? JSON.stringify(codes) : null;
         
         let sql, params;
         if (hasOldColumns) {
           // Old schema has blank_word_index - provide dummy value (we don't use it)
           const dummyBlankIndex = 0; // Dummy value to satisfy NOT NULL constraint
-          sql = `
-            UPDATE curriculum_phrases 
-            SET korean_text = ?, english_text = ?, blank_word_index = ?, correct_answers_json = ?, grammar_breakdown_json = ?
-            WHERE id = ?
-          `;
-          params = [koreanText, englishText, dummyBlankIndex, correctAnswersJson, grammarBreakdownJson, id];
+          if (hasWordTypes && hasWordTypeCodes) {
+            sql = `
+              UPDATE curriculum_phrases 
+              SET korean_text = ?, english_text = ?, blank_word_index = ?, correct_answers_json = ?, grammar_breakdown_json = ?, word_types_json = ?, word_type_codes_json = ?
+              WHERE id = ?
+            `;
+            params = [koreanText, englishText, dummyBlankIndex, correctAnswersJson, grammarBreakdownJson, wordTypesJson, wordTypeCodesJson, id];
+          } else if (hasWordTypes) {
+            sql = `
+              UPDATE curriculum_phrases 
+              SET korean_text = ?, english_text = ?, blank_word_index = ?, correct_answers_json = ?, grammar_breakdown_json = ?, word_types_json = ?
+              WHERE id = ?
+            `;
+            params = [koreanText, englishText, dummyBlankIndex, correctAnswersJson, grammarBreakdownJson, wordTypesJson, id];
+          } else {
+            sql = `
+              UPDATE curriculum_phrases 
+              SET korean_text = ?, english_text = ?, blank_word_index = ?, correct_answers_json = ?, grammar_breakdown_json = ?
+              WHERE id = ?
+            `;
+            params = [koreanText, englishText, dummyBlankIndex, correctAnswersJson, grammarBreakdownJson, id];
+          }
         } else {
           // New schema without old columns
-          sql = `
-            UPDATE curriculum_phrases 
-            SET korean_text = ?, english_text = ?, correct_answers_json = ?, grammar_breakdown_json = ?
-            WHERE id = ?
-          `;
-          params = [koreanText, englishText, correctAnswersJson, grammarBreakdownJson, id];
+          if (hasWordTypes && hasWordTypeCodes) {
+            sql = `
+              UPDATE curriculum_phrases 
+              SET korean_text = ?, english_text = ?, correct_answers_json = ?, grammar_breakdown_json = ?, word_types_json = ?, word_type_codes_json = ?
+              WHERE id = ?
+            `;
+            params = [koreanText, englishText, correctAnswersJson, grammarBreakdownJson, wordTypesJson, wordTypeCodesJson, id];
+          } else if (hasWordTypes) {
+            sql = `
+              UPDATE curriculum_phrases 
+              SET korean_text = ?, english_text = ?, correct_answers_json = ?, grammar_breakdown_json = ?, word_types_json = ?
+              WHERE id = ?
+            `;
+            params = [koreanText, englishText, correctAnswersJson, grammarBreakdownJson, wordTypesJson, id];
+          } else {
+            sql = `
+              UPDATE curriculum_phrases 
+              SET korean_text = ?, english_text = ?, correct_answers_json = ?, grammar_breakdown_json = ?
+              WHERE id = ?
+            `;
+            params = [koreanText, englishText, correctAnswersJson, grammarBreakdownJson, id];
+          }
         }
         
         // Capture db reference before callback
@@ -652,6 +1204,37 @@ class Database {
           resolve(this.changes);
         }
       });
+    });
+  }
+
+  async archiveCurriculumPhrase(id, isArchived = true) {
+    return new Promise(async (resolve, reject) => {
+      try {
+        // Ensure is_archived column exists
+        const cols = await new Promise((resolve, reject) => {
+          this.db.all(`PRAGMA table_info(curriculum_phrases)`, (err, cols) => {
+            if (err) reject(err);
+            else resolve(cols || []);
+          });
+        });
+        const colNames = cols.map(c => c.name);
+        if (!colNames.includes('is_archived')) {
+          await new Promise((resolve2) => {
+            this.db.run(`ALTER TABLE curriculum_phrases ADD COLUMN is_archived INTEGER DEFAULT 0`, () => resolve2());
+          });
+        }
+        
+        const sql = `UPDATE curriculum_phrases SET is_archived = ? WHERE id = ?`;
+        this.db.run(sql, [isArchived ? 1 : 0, id], function(err) {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(this.changes);
+          }
+        });
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
@@ -935,16 +1518,16 @@ class Database {
     return new Promise((resolve, reject) => {
       const sql = `
         SELECT * FROM (
-          SELECT 'noun' AS type, korean AS korean, english, created_at FROM nouns WHERE is_learning = 1
-          UNION ALL SELECT 'proper-noun', korean, english, created_at FROM proper_nouns WHERE is_learning = 1
-          UNION ALL SELECT 'verb', base_form AS korean, english, created_at FROM verbs WHERE is_learning = 1
-          UNION ALL SELECT 'adjective', korean, english, created_at FROM adjectives WHERE is_learning = 1
-          UNION ALL SELECT 'adverb', korean, english, created_at FROM adverbs WHERE is_learning = 1
-          UNION ALL SELECT 'pronoun', korean, english, created_at FROM pronouns WHERE is_learning = 1
-          UNION ALL SELECT 'conjunction', korean, english, created_at FROM conjunctions WHERE is_learning = 1
-          UNION ALL SELECT 'particle', korean, english, created_at FROM particles WHERE is_learning = 1
+          SELECT 'noun' AS type, korean AS korean, english, created_at, COALESCE(priority_level, 0) AS priority_level FROM nouns WHERE is_learning = 1
+          UNION ALL SELECT 'proper-noun', korean, english, created_at, COALESCE(priority_level, 0) AS priority_level FROM proper_nouns WHERE is_learning = 1
+          UNION ALL SELECT 'verb', base_form AS korean, english, created_at, COALESCE(priority_level, 0) AS priority_level FROM verbs WHERE is_learning = 1
+          UNION ALL SELECT 'adjective', korean, english, created_at, COALESCE(priority_level, 0) AS priority_level FROM adjectives WHERE is_learning = 1
+          UNION ALL SELECT 'adverb', korean, english, created_at, COALESCE(priority_level, 0) AS priority_level FROM adverbs WHERE is_learning = 1
+          UNION ALL SELECT 'pronoun', korean, english, created_at, COALESCE(priority_level, 0) AS priority_level FROM pronouns WHERE is_learning = 1
+          UNION ALL SELECT 'conjunction', korean, english, created_at, COALESCE(priority_level, 0) AS priority_level FROM conjunctions WHERE is_learning = 1
+          UNION ALL SELECT 'particle', korean, english, created_at, COALESCE(priority_level, 0) AS priority_level FROM particles WHERE is_learning = 1
         ) t
-        ORDER BY datetime(COALESCE(created_at, '1970-01-01')) ASC
+        ORDER BY priority_level DESC, datetime(COALESCE(created_at, '1970-01-01')) ASC
         LIMIT ?
       `;
       this.db.all(sql, [limit], (err, rows) => {
@@ -957,7 +1540,7 @@ class Database {
     });
   }
 
-  async updateWordTags(wordType, korean, { is_favorite, is_learning, is_learned }) {
+  async updateWordTags(wordType, korean, { is_favorite, is_learning, is_learned, priority_level }) {
     return new Promise((resolve, reject) => {
       const tableName = this._mapWordTypeToTable(wordType);
       const keyColumn = (wordType === 'verb' || wordType === 'adjective') ? 'base_form' : 'korean';
@@ -966,9 +1549,38 @@ class Database {
       if (typeof is_favorite === 'boolean') { sets.push('is_favorite = ?'); params.push(is_favorite ? 1 : 0); }
       if (typeof is_learning === 'boolean') { sets.push('is_learning = ?'); params.push(is_learning ? 1 : 0); }
       if (typeof is_learned === 'boolean') { sets.push('is_learned = ?'); params.push(is_learned ? 1 : 0); }
+      if (typeof priority_level === 'number' && Number.isFinite(priority_level)) { sets.push('priority_level = ?'); params.push(Math.max(0, Math.min(10, Math.round(priority_level)))); }
       if (sets.length === 0) return resolve(0);
       const sql = `UPDATE ${tableName} SET ${sets.join(', ')} WHERE ${keyColumn} = ?`;
       params.push(korean);
+      this.db.run(sql, params, function(err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(this.changes || 0);
+        }
+      });
+    });
+  }
+
+  async updateWordFields(wordType, oldKorean, { korean, english }) {
+    return new Promise((resolve, reject) => {
+      const tableName = this._mapWordTypeToTable(wordType);
+      const keyColumn = (wordType === 'verb' || wordType === 'adjective') ? 'base_form' : 'korean';
+      const sets = [];
+      const params = [];
+      if (korean && typeof korean === 'string' && korean.trim()) {
+        const fieldName = (wordType === 'verb' || wordType === 'adjective') ? 'base_form' : 'korean';
+        sets.push(`${fieldName} = ?`);
+        params.push(korean.trim());
+      }
+      if (english && typeof english === 'string' && english.trim()) {
+        sets.push('english = ?');
+        params.push(english.trim());
+      }
+      if (sets.length === 0) return resolve(0);
+      const sql = `UPDATE ${tableName} SET ${sets.join(', ')} WHERE ${keyColumn} = ?`;
+      params.push(oldKorean);
       this.db.run(sql, params, function(err) {
         if (err) {
           reject(err);
@@ -1088,6 +1700,7 @@ class Database {
           if (!names.includes('is_learning')) stmts.push(`ALTER TABLE ${table} ADD COLUMN is_learning INTEGER DEFAULT 0`);
           if (!names.includes('is_learned')) stmts.push(`ALTER TABLE ${table} ADD COLUMN is_learned INTEGER DEFAULT 0`);
           if (!names.includes('first_try_correct')) stmts.push(`ALTER TABLE ${table} ADD COLUMN first_try_correct INTEGER DEFAULT 0`);
+          if (!names.includes('priority_level')) stmts.push(`ALTER TABLE ${table} ADD COLUMN priority_level INTEGER DEFAULT 0`);
           if (stmts.length === 0) return addForIndex(idx + 1);
           this.db.exec(stmts.join(';\n') + ';', (e) => {
             if (e) return reject(e);

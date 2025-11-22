@@ -21,6 +21,7 @@
       "purpose": "any maskable"
     }
   ],
+  "id": "/",
   "start_url": "/",
   "display": "standalone",
   "theme_color": "#1976d2",
@@ -31,6 +32,15 @@
   "prefer_related_applications": false,
   "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
   "screenshots": [],
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
+  "capture_links": "existing-client-navigate",
+  "url_handlers": [
+    {
+      "origin": "https://neonleon.ca"
+    }
+  ],
   "shortcuts": [
     {
       "name": "Translate",
@@ -50,14 +60,14 @@
       "name": "Practice",
       "short_name": "Practice",
       "description": "Practice curriculum phrases",
-      "url": "/curriculum-practice",
+      "url": "/practice",
       "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
     },
     {
       "name": "Audio Learning",
       "short_name": "Audio",
       "description": "Listen and learn Korean",
-      "url": "/quiz-mode",
+      "url": "/audio-learning",
       "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
     },
     {
@@ -93,6 +103,13 @@
       "short_name": "Pronunc.",
       "description": "Korean pronunciation tools",
       "url": "/pronunciation",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "K‑pop Lyrics",
+      "short_name": "K‑pop",
+      "description": "Review K‑pop lyrics",
+      "url": "/kpop-lyrics",
       "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
     }
   ]

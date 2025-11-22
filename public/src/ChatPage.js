@@ -1,6 +1,6 @@
 import React from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import './TranslationPage.css';
+import './styles/TranslationPage.css';
 
 function ChatPage() {
   const [searchParams] = useSearchParams();
@@ -161,7 +161,7 @@ Keep it concise and structured for a learner.`;
               onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={onChatKeyDown}
               placeholder={lastContext ? 'Ask about the explanation…' : 'Optional: translate first to provide context'}
-              style={{ flex: 1, padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 10 }}
+              style={{ flex: 1, padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 10, color: '#111827' }}
             />
             <button ref={sendBtnRef} className="translation-link" onClick={handleSend} disabled={!chatInput.trim()}>
               Send

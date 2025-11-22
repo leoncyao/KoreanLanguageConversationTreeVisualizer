@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from './api';
-import './StatsPage.css';
+import './styles/StatsPage.css';
 
 const WORD_TYPES = ['noun', 'proper-noun', 'verb', 'adjective', 'adverb', 'pronoun', 'conjunction', 'particle'];
 const TABS = [
@@ -24,12 +24,14 @@ function StatsPage() {
   const [tagFilter, setTagFilter] = useState('all'); // 'all' | 'favorite' | 'learning' | 'learned'
   const [saving, setSaving] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [editingWord, setEditingWord] = useState(null); // { type, korean, english }
 
   const updateTagLocal = (type, korean, next) => {
     setWordsByType((prev) => {
       const clone = { ...prev };
       const list = (clone[type] || []).map((w) => {
-        if ((type === 'verb' ? (w.base_form || w.korean) : w.korean) === korean) {
+        const keyValue = (type === 'verb' ? (w.base_form || w.korean) : w.korean);
+        if (keyValue === korean) {
           return { ...w, ...next };
         }
         return w;
@@ -51,6 +53,62 @@ function StatsPage() {
         const data = await res.json();
         setWordsByType((prev) => ({ ...prev, [type]: Array.isArray(data) ? data : [] }));
       } catch (_) {}
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSetPriority = async (type, korean, priority) => {
+    try {
+      setSaving(true);
+      updateTagLocal(type, korean, { priority_level: priority });
+      await api.updateWordTags(type, korean, { priority_level: priority });
+    } catch (e) {
+      // Revert on error: refetch minimal for that type
+      try {
+        const res = await api.getWordsByType(type, 200);
+        const data = await res.json();
+        setWordsByType((prev) => ({ ...prev, [type]: Array.isArray(data) ? data : [] }));
+      } catch (_) {}
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleUpdateWord = async (type, oldKorean, newKorean, newEnglish) => {
+    try {
+      setSaving(true);
+      const res = await api.updateWordFields(type, oldKorean, { korean: newKorean, english: newEnglish });
+      if (!res.ok) throw new Error('Failed to update word');
+      // Update local state
+      setWordsByType((prev) => {
+        const clone = { ...prev };
+        const list = (clone[type] || []).map((w) => {
+          const keyValue = (type === 'verb' ? (w.base_form || w.korean) : w.korean);
+          if (keyValue === oldKorean) {
+            const updated = { ...w };
+            if (type === 'verb' || type === 'adjective') {
+              updated.base_form = newKorean;
+            } else {
+              updated.korean = newKorean;
+            }
+            updated.english = newEnglish;
+            return updated;
+          }
+          return w;
+        });
+        clone[type] = list;
+        return clone;
+      });
+      setEditingWord(null);
+    } catch (e) {
+      // Revert on error: refetch for that type
+      try {
+        const res = await api.getWordsByType(type, 200);
+        const data = await res.json();
+        setWordsByType((prev) => ({ ...prev, [type]: Array.isArray(data) ? data : [] }));
+      } catch (_) {}
+      alert('Failed to update word: ' + (e.message || String(e)));
     } finally {
       setSaving(false);
     }
@@ -125,6 +183,16 @@ function StatsPage() {
     return all.filter(passesTag).sort(sortCompare).slice(0, 25);
   }, [wordsByType, sortField, tagFilter]);
 
+  const allLearningWords = useMemo(() => {
+    const all = WORD_TYPES.flatMap((t) => (wordsByType[t] || []).map((w) => ({ ...w, __type: t })));
+    return all.filter((w) => !!w.is_learning).sort((a, b) => {
+      // Sort by date added (oldest first, as they appear in learning sets)
+      const ad = Date.parse(a.created_at || a.createdAt || 0);
+      const bd = Date.parse(b.created_at || b.createdAt || 0);
+      return (ad || 0) - (bd || 0);
+    });
+  }, [wordsByType]);
+
   const renderTypeTable = (typeKey) => {
     // proper-noun uses the same columns as most types
     const list = (wordsByType[typeKey] || []).filter(passesTag).sort(sortCompare).slice(0, 25);
@@ -158,10 +226,75 @@ function StatsPage() {
                   const past = w.past_informal || w.past_formal || w.past_honorific || '-';
                   const future = w.future_informal || w.future_formal || w.future_honorific || '-';
                   const rowKey = `${typeKey}-${base}-${idx}`;
+                  const isEditing = editingWord && editingWord.type === 'verb' && editingWord.korean === base;
                   return (
                     <tr key={rowKey}>
-                      <td className="korean-cell">{base}</td>
-                      <td>{w.english}</td>
+                      <td className="korean-cell">
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            defaultValue={base}
+                            onBlur={(e) => {
+                              const newVal = e.target.value.trim();
+                              if (newVal && newVal !== base) {
+                                handleUpdateWord('verb', base, newVal, editingWord.english);
+                              } else {
+                                setEditingWord(null);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.target.blur();
+                              } else if (e.key === 'Escape') {
+                                setEditingWord(null);
+                              }
+                            }}
+                            style={{ width: '100%', padding: '4px', border: '1px solid #1976d2', borderRadius: '4px' }}
+                            autoFocus
+                          />
+                        ) : (
+                          <span
+                            onClick={() => setEditingWord({ type: 'verb', korean: base, english: w.english || '' })}
+                            style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
+                            title="Click to edit"
+                          >
+                            {base}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            defaultValue={w.english || ''}
+                            onChange={(e) => setEditingWord({ ...editingWord, english: e.target.value })}
+                            onBlur={(e) => {
+                              const newVal = e.target.value.trim();
+                              if (newVal !== (w.english || '')) {
+                                handleUpdateWord('verb', base, editingWord.korean, newVal);
+                              } else {
+                                setEditingWord(null);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.target.blur();
+                              } else if (e.key === 'Escape') {
+                                setEditingWord(null);
+                              }
+                            }}
+                            style={{ width: '100%', padding: '4px', border: '1px solid #1976d2', borderRadius: '4px' }}
+                          />
+                        ) : (
+                          <span
+                            onClick={() => setEditingWord({ type: 'verb', korean: base, english: w.english || '' })}
+                            style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
+                            title="Click to edit"
+                          >
+                            {w.english}
+                          </span>
+                        )}
+                      </td>
                       <td className="verb-conjugation-cell">{present}</td>
                       <td className="verb-conjugation-cell">{past}</td>
                       <td className="verb-conjugation-cell">{future}</td>
@@ -204,10 +337,75 @@ function StatsPage() {
               {list.map((w, idx) => {
                 const koreanValue = typeKey === 'verb' ? (w.base_form || w.korean || '') : (w.korean || '');
                 const rowKey = `${typeKey}-${koreanValue}-${idx}`;
+                const isEditing = editingWord && editingWord.type === typeKey && editingWord.korean === koreanValue;
                 return (
                   <tr key={rowKey}>
-                    <td className="korean-cell">{koreanValue}</td>
-                    <td>{w.english}</td>
+                    <td className="korean-cell">
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          defaultValue={koreanValue}
+                          onBlur={(e) => {
+                            const newVal = e.target.value.trim();
+                            if (newVal && newVal !== koreanValue) {
+                              handleUpdateWord(typeKey, koreanValue, newVal, editingWord.english);
+                            } else {
+                              setEditingWord(null);
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.target.blur();
+                            } else if (e.key === 'Escape') {
+                              setEditingWord(null);
+                            }
+                          }}
+                          style={{ width: '100%', padding: '4px', border: '1px solid #1976d2', borderRadius: '4px' }}
+                          autoFocus
+                        />
+                      ) : (
+                        <span
+                          onClick={() => setEditingWord({ type: typeKey, korean: koreanValue, english: w.english || '' })}
+                          style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
+                          title="Click to edit"
+                        >
+                          {koreanValue}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          defaultValue={w.english || ''}
+                          onChange={(e) => setEditingWord({ ...editingWord, english: e.target.value })}
+                          onBlur={(e) => {
+                            const newVal = e.target.value.trim();
+                            if (newVal !== (w.english || '')) {
+                              handleUpdateWord(typeKey, koreanValue, editingWord.korean, newVal);
+                            } else {
+                              setEditingWord(null);
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.target.blur();
+                            } else if (e.key === 'Escape') {
+                              setEditingWord(null);
+                            }
+                          }}
+                          style={{ width: '100%', padding: '4px', border: '1px solid #1976d2', borderRadius: '4px' }}
+                        />
+                      ) : (
+                        <span
+                          onClick={() => setEditingWord({ type: typeKey, korean: koreanValue, english: w.english || '' })}
+                          style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
+                          title="Click to edit"
+                        >
+                          {w.english}
+                        </span>
+                      )}
+                    </td>
                     <td><input type="checkbox" checked={!!w.is_favorite} onChange={(e) => handleToggleTag(typeKey, koreanValue, 'is_favorite', e.target.checked)} /></td>
                     <td><input type="checkbox" checked={!!w.is_learning} onChange={(e) => handleToggleTag(typeKey, koreanValue, 'is_learning', e.target.checked)} /></td>
                     <td><input type="checkbox" checked={!!w.is_learned} onChange={(e) => handleToggleTag(typeKey, koreanValue, 'is_learned', e.target.checked)} /></td>
@@ -217,9 +415,9 @@ function StatsPage() {
                   </tr>
                 );
               })}
-              {list.length === 0 && (
-                <tr><td colSpan="7" className="empty">No {title.toLowerCase()}s yet.</td></tr>
-              )}
+                {list.length === 0 && (
+                  <tr><td colSpan="8" className="empty">No {title.toLowerCase()}s yet.</td></tr>
+                )}
             </tbody>
           </table>
         </div>
@@ -242,7 +440,113 @@ function StatsPage() {
         <p className="stats-subtitle">Tracking how often you correctly fill words in Phrase Practice.</p>
       </div>
 
-
+      {/* Learning Words Panel */}
+      {allLearningWords.length > 0 && (
+        <div className="stats-section" style={{ marginBottom: '24px' }}>
+          <h2 className="section-title">All Learning Words ({allLearningWords.length})</h2>
+          <div className="table-card">
+            <table className="stats-table">
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Korean</th>
+                  <th>English</th>
+                  <th>Fav</th>
+                  <th>Learning</th>
+                  <th>Learned</th>
+                  <th>Correct</th>
+                  <th>First Try</th>
+                  <th>Seen</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allLearningWords.map((w, idx) => {
+                  const koreanValue = w.__type === 'verb' ? (w.base_form || w.korean || '') : (w.korean || '');
+                  const rowKey = `learning-${w.__type}-${koreanValue}-${idx}`;
+                  const isEditing = editingWord && editingWord.type === w.__type && editingWord.korean === koreanValue;
+                  return (
+                    <tr key={rowKey}>
+                      <td>{w.__type}</td>
+                      <td className="korean-cell">
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            defaultValue={koreanValue}
+                            onBlur={(e) => {
+                              const newVal = e.target.value.trim();
+                              if (newVal && newVal !== koreanValue) {
+                                handleUpdateWord(w.__type, koreanValue, newVal, editingWord.english);
+                              } else {
+                                setEditingWord(null);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.target.blur();
+                              } else if (e.key === 'Escape') {
+                                setEditingWord(null);
+                              }
+                            }}
+                            style={{ width: '100%', padding: '4px', border: '1px solid #1976d2', borderRadius: '4px' }}
+                            autoFocus
+                          />
+                        ) : (
+                          <span
+                            onClick={() => setEditingWord({ type: w.__type, korean: koreanValue, english: w.english || '' })}
+                            style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
+                            title="Click to edit"
+                          >
+                            {koreanValue}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            defaultValue={w.english || ''}
+                            onChange={(e) => setEditingWord({ ...editingWord, english: e.target.value })}
+                            onBlur={(e) => {
+                              const newVal = e.target.value.trim();
+                              if (newVal !== (w.english || '')) {
+                                handleUpdateWord(w.__type, koreanValue, editingWord.korean, newVal);
+                              } else {
+                                setEditingWord(null);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.target.blur();
+                              } else if (e.key === 'Escape') {
+                                setEditingWord(null);
+                              }
+                            }}
+                            style={{ width: '100%', padding: '4px', border: '1px solid #1976d2', borderRadius: '4px' }}
+                          />
+                        ) : (
+                          <span
+                            onClick={() => setEditingWord({ type: w.__type, korean: koreanValue, english: w.english || '' })}
+                            style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
+                            title="Click to edit"
+                          >
+                            {w.english}
+                          </span>
+                        )}
+                      </td>
+                      <td><input type="checkbox" checked={!!w.is_favorite} onChange={(e) => handleToggleTag(w.__type, koreanValue, 'is_favorite', e.target.checked)} /></td>
+                      <td><input type="checkbox" checked={!!w.is_learning} onChange={(e) => handleToggleTag(w.__type, koreanValue, 'is_learning', e.target.checked)} /></td>
+                      <td><input type="checkbox" checked={!!w.is_learned} onChange={(e) => handleToggleTag(w.__type, koreanValue, 'is_learned', e.target.checked)} /></td>
+                      <td className="metric">{w.times_correct || 0}</td>
+                      <td className="metric">{w.first_try_correct || 0}</td>
+                      <td className="metric">{w.times_seen || 0}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="tabs">
         {TABS.map((tab) => (
@@ -332,11 +636,76 @@ function StatsPage() {
                   {topOverall.map((w, idx) => {
                     const koreanValue = w.__type === 'verb' ? (w.base_form || w.korean || '') : (w.korean || '');
                     const rowKey = `${w.__type}-${koreanValue}-${idx}`;
+                    const isEditing = editingWord && editingWord.type === w.__type && editingWord.korean === koreanValue;
                     return (
                       <tr key={rowKey}>
                         <td>{w.__type}</td>
-                        <td className="korean-cell">{koreanValue}</td>
-                        <td>{w.english}</td>
+                        <td className="korean-cell">
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              defaultValue={koreanValue}
+                              onBlur={(e) => {
+                                const newVal = e.target.value.trim();
+                                if (newVal && newVal !== koreanValue) {
+                                  handleUpdateWord(w.__type, koreanValue, newVal, editingWord.english);
+                                } else {
+                                  setEditingWord(null);
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.target.blur();
+                                } else if (e.key === 'Escape') {
+                                  setEditingWord(null);
+                                }
+                              }}
+                              style={{ width: '100%', padding: '4px', border: '1px solid #1976d2', borderRadius: '4px' }}
+                              autoFocus
+                            />
+                          ) : (
+                            <span
+                              onClick={() => setEditingWord({ type: w.__type, korean: koreanValue, english: w.english || '' })}
+                              style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
+                              title="Click to edit"
+                            >
+                              {koreanValue}
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              defaultValue={w.english || ''}
+                              onChange={(e) => setEditingWord({ ...editingWord, english: e.target.value })}
+                              onBlur={(e) => {
+                                const newVal = e.target.value.trim();
+                                if (newVal !== (w.english || '')) {
+                                  handleUpdateWord(w.__type, koreanValue, editingWord.korean, newVal);
+                                } else {
+                                  setEditingWord(null);
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.target.blur();
+                                } else if (e.key === 'Escape') {
+                                  setEditingWord(null);
+                                }
+                              }}
+                              style={{ width: '100%', padding: '4px', border: '1px solid #1976d2', borderRadius: '4px' }}
+                            />
+                          ) : (
+                            <span
+                              onClick={() => setEditingWord({ type: w.__type, korean: koreanValue, english: w.english || '' })}
+                              style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
+                              title="Click to edit"
+                            >
+                              {w.english}
+                            </span>
+                          )}
+                        </td>
                         <td><input type="checkbox" checked={!!w.is_favorite} onChange={(e) => handleToggleTag(w.__type, koreanValue, 'is_favorite', e.target.checked)} /></td>
                         <td><input type="checkbox" checked={!!w.is_learning} onChange={(e) => handleToggleTag(w.__type, koreanValue, 'is_learning', e.target.checked)} /></td>
                         <td><input type="checkbox" checked={!!w.is_learned} onChange={(e) => handleToggleTag(w.__type, koreanValue, 'is_learned', e.target.checked)} /></td>
@@ -347,7 +716,7 @@ function StatsPage() {
                     );
                   })}
                   {topOverall.length === 0 && (
-                    <tr><td colSpan="8" className="empty">No words yet.</td></tr>
+                    <tr><td colSpan="9" className="empty">No words yet.</td></tr>
                   )}
                 </tbody>
               </table>

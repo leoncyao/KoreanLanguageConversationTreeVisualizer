@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from './api';
-import './HomePage.css';
+import './styles/HomePage.css';
 
 // Single delay (ms) to wait after speaking (or on fallback) before advancing
 const SPEAK_ADVANCE_DELAY_MS = 1200;
@@ -64,6 +64,7 @@ function PhrasePractice({ modelSentence, grammarRule }) {
   const [isLoadingExplanation, setIsLoadingExplanation] = useState(false);
   const [explanationPhraseId, setExplanationPhraseId] = useState(null);
   const [sessionNoTrack, setSessionNoTrack] = useState(false); // When true, do not track curriculum stats this session
+  const [showEnglish, setShowEnglish] = useState(true); // Toggle English translation visibility
 
   const speakText = useCallback((text, onEnd, repeatCount = 3) => {
     try {
@@ -497,12 +498,71 @@ Keep it concise and structured, focusing on helping someone understand how the s
   }
 
   const koreanParts = blankPhrase.korean.split('[BLANK]');
+  const hasVariations = generatedVariations.length > 0;
+  const totalSets = hasVariations ? Math.ceil(generatedVariations.length / 5) : 0;
+  const currentSet = hasVariations ? Math.floor(currentVariationIndex / 5) + 1 : 0;
+  const setStartIndex = hasVariations ? Math.floor(currentVariationIndex / 5) * 5 : 0;
+  const handlePrevSet = React.useCallback(() => {
+    if (!hasVariations) return;
+    const newStart = Math.max(0, setStartIndex - 5);
+    const nextIndex = newStart;
+    setCurrentVariationIndex(nextIndex);
+    setCurrentPhrase({
+      korean_text: generatedVariations[nextIndex].korean,
+      english_text: generatedVariations[nextIndex].english,
+      id: `variation-${nextIndex}`,
+      times_correct: 0
+    });
+    setExplanationText('');
+    setExplanationPhraseId(null);
+    setShowExplanation(false);
+  }, [hasVariations, setStartIndex, generatedVariations]);
+  const handleNextSet = React.useCallback(() => {
+    if (!hasVariations) return;
+    const newStart = Math.min(Math.max(0, (totalSets - 1) * 5), setStartIndex + 5);
+    const nextIndex = newStart;
+    setCurrentVariationIndex(nextIndex);
+    setCurrentPhrase({
+      korean_text: generatedVariations[nextIndex].korean,
+      english_text: generatedVariations[nextIndex].english,
+      id: `variation-${nextIndex}`,
+      times_correct: 0
+    });
+    setExplanationText('');
+    setExplanationPhraseId(null);
+    setShowExplanation(false);
+  }, [hasVariations, setStartIndex, totalSets, generatedVariations]);
 
   return (
     <div className="sentence-box">
       {generatedVariations.length > 0 && (
-        <div className="variation-indicator">
-          Similar Sentence {currentVariationIndex + 1} of {generatedVariations.length}
+        <div style={{ textAlign: 'center', marginBottom: 10 }}>
+          <h2 style={{ margin: 0 }}>Set {currentSet} / {totalSets || 1}</h2>
+          <h3 style={{ margin: '4px 0 0 0', color: '#6b7280', fontWeight: 600 }}>
+            {currentVariationIndex + 1} / {generatedVariations.length} phrases (session)
+          </h3>
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: 8 }}>
+            <button
+              type="button"
+              className="regenerate-button"
+              onClick={handlePrevSet}
+              disabled={currentSet <= 1}
+              title="Go to previous set of 5"
+              style={{ padding: '6px 14px' }}
+            >
+              Prev 5
+            </button>
+            <button
+              type="button"
+              className="regenerate-button"
+              onClick={handleNextSet}
+              disabled={currentSet >= totalSets}
+              title="Go to next set of 5"
+              style={{ padding: '6px 14px' }}
+            >
+              Next 5
+            </button>
+          </div>
         </div>
       )}
       {modelSentence && (
@@ -525,7 +585,21 @@ Keep it concise and structured, focusing on helping someone understand how the s
         {koreanParts[1]}
       </p>
       {feedback && <p className="feedback">{feedback}</p>}
-      <p className="translation">{blankPhrase.translation}</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        {showEnglish ? (
+          <p className="translation" style={{ margin: 0 }}>{blankPhrase.translation}</p>
+        ) : (
+          <p className="translation" style={{ margin: 0, color: '#6b7280' }}>English hidden</p>
+        )}
+        <button
+          type="button"
+          className="regenerate-button"
+          onClick={() => setShowEnglish(v => !v)}
+          title={showEnglish ? 'Hide English translation' : 'Show English translation'}
+        >
+          {showEnglish ? 'Hide EN' : 'Show EN'}
+        </button>
+      </div>
       <div className="sentence-box" style={{ textAlign: 'left', marginTop: 8 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3 style={{ margin: 0 }}>Explanation</h3>

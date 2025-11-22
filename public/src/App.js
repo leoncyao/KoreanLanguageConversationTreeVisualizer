@@ -9,11 +9,13 @@ import GrammarPage from './GrammarPage';
 import PronunciationPage from './PronunciationPage';
 import AudioLearningPage from './AudioLearningPage';
 import CurriculumPage from './CurriculumPage';
-import CurriculumPracticePage from './CurriculumPracticePage';
+import PracticePage from './PracticePage';
+import MixPage from './MixPage';
 import JournalPage from './JournalPage';
 import JournalArchivePage from './JournalArchivePage';
 import LexiconAddPage from './LexiconAddPage';
-import './App.css';
+import KpopLyricsPage from './KpopLyricsPage';
+import './styles/App.css';
 
 function App() {
   return (
@@ -26,12 +28,14 @@ function App() {
         <Route path="/stats" element={<StatsPage />} />
         <Route path="/grammar" element={<GrammarPage />} />
         <Route path="/pronunciation" element={<PronunciationPage />} />
-        <Route path="/quiz-mode" element={<AudioLearningPage />} />
+        <Route path="/audio-learning" element={<AudioLearningPage />} />
         <Route path="/curriculum" element={<CurriculumPage />} />
-        <Route path="/curriculum-practice" element={<CurriculumPracticePage />} />
+        <Route path="/practice" element={<PracticePage />} />
+        <Route path="/mix" element={<MixPage />} />
         <Route path="/journal" element={<JournalPage />} />
         <Route path="/journal-entries" element={<JournalArchivePage />} />
         <Route path="/lexicon-add" element={<LexiconAddPage />} />
+        <Route path="/kpop-lyrics" element={<KpopLyricsPage />} />
       </Routes>
     </Router>
   );

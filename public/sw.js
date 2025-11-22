@@ -31,6 +31,20 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
+// Listen for skip waiting message from client
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
+// Periodic update check (every 6 hours)
+setInterval(() => {
+  self.registration.update().catch(err => {
+    console.log('Periodic update check failed:', err);
+  });
+}, 6 * 60 * 60 * 1000);
+
 // Helper: cache-first for static requests
 async function cacheFirst(request) {
   const cached = await caches.match(request);

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { api } from './api';
-import './HomePage.css';
+import './styles/HomePage.css';
 
 const escapeHtml = (str) => {
   if (!str) return '';
@@ -406,6 +406,20 @@ Format the response clearly and structured, using markdown if helpful.`;
     }
   }, [loadPhrases]);
 
+  const handleArchive = useCallback(async (id, isArchived) => {
+    try {
+      const res = await api.archiveCurriculumPhrase(id, isArchived);
+      if (!res.ok) {
+        const errorText = await res.text().catch(() => '');
+        throw new Error(`Failed to ${isArchived ? 'archive' : 'unarchive'} phrase: ${res.status} ${res.statusText}${errorText ? ` - ${errorText}` : ''}`);
+      }
+      await loadPhrases();
+    } catch (e) {
+      console.error(`Error ${isArchived ? 'archiving' : 'unarchiving'} phrase:`, e);
+      setError(String(e && e.message || e));
+    }
+  }, [loadPhrases]);
+
   const getBlankedSentence = (korean, blankIndices) => {
     const words = korean.trim().split(' ').filter(w => w);
     if (!Array.isArray(blankIndices) || blankIndices.length === 0) return korean;
@@ -423,6 +437,200 @@ Format the response clearly and structured, using markdown if helpful.`;
     
     return result.join(' ');
   };
+
+  const renderPhrase = (phrase) => {
+    const isEditing = editingId === phrase.id;
+    const words = phrase.korean_text.trim().split(' ').filter(w => w);
+
+    return (
+      <div key={phrase.id} className="sentence-box" style={{ textAlign: 'left', opacity: phrase.is_archived ? 0.7 : 1 }}>
+        {!isEditing ? (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>
+                <span className="ko-text">
+                {getBlankedSentence(phrase.korean_text, phrase.blank_word_indices || (phrase.blank_word_index !== null && phrase.blank_word_index !== undefined ? [phrase.blank_word_index] : []))}
+                </span>
+              </div>
+              <div style={{ color: '#666', marginBottom: 8 }}>{phrase.english_text}</div>
+              <div style={{ fontSize: 12, color: '#999' }}>
+                Blank words: {phrase.blank_word_indices?.map((i, idx) => {
+                  const word = words[i];
+                  const wordType = phrase.blank_word_types && phrase.blank_word_types[idx] ? ` (${phrase.blank_word_types[idx]})` : '';
+                  return `${i}:${word}${wordType}`;
+                }).join(', ') || (phrase.blank_word_index !== null && phrase.blank_word_index !== undefined ? `${phrase.blank_word_index}:${words[phrase.blank_word_index]}` : 'none')}
+                {phrase.correct_answers && phrase.correct_answers.length > 0 && (
+                  <span> | Answers: {phrase.correct_answers.join(', ')}</span>
+                )}
+              </div>
+              {phrase.grammar_breakdown && (
+                <details style={{ marginTop: 8, fontSize: 12 }}>
+                  <summary style={{ cursor: 'pointer', color: '#666' }}>Show Grammar Breakdown</summary>
+                  <div 
+                    style={{ 
+                      marginTop: 8, 
+                      padding: '8px', 
+                      background: '#f8f9fa', 
+                      border: '1px solid #ddd', 
+                      borderRadius: 4,
+                      fontSize: 12,
+                      lineHeight: '1.5'
+                    }}
+                    dangerouslySetInnerHTML={{ __html: mdToHtml(phrase.grammar_breakdown) }}
+                  />
+                </details>
+              )}
+              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+                ✓ {phrase.times_correct || 0} | ✗ {phrase.times_incorrect || 0}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="regenerate-button" onClick={() => {
+                // Ensure blank_word_types is properly initialized when editing
+                const phraseToEdit = {
+                  ...phrase,
+                  blank_word_types: phrase.blank_word_types || []
+                };
+                setEditingId(phrase.id);
+                setEditingPhrase(phraseToEdit);
+              }}>Edit</button>
+              <button className="regenerate-button" onClick={() => handleArchive(phrase.id, !phrase.is_archived)}>
+                {phrase.is_archived ? 'Unarchive' : 'Archive'}
+              </button>
+              <button className="regenerate-button" onClick={() => handleDelete(phrase.id)}>Delete</button>
+            </div>
+          </div>
+        ) : editingPhrase && editingPhrase.id === phrase.id ? (
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div>
+              <label style={{ display: 'block', marginBottom: 4, fontWeight: 600 }}>Korean Text</label>
+              <input
+                type="text"
+                value={editingPhrase.korean_text || ''}
+                onChange={(e) => setEditingPhrase({ ...editingPhrase, korean_text: e.target.value })}
+                style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: 4 }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', marginBottom: 4, fontWeight: 600 }}>English Text</label>
+              <input
+                type="text"
+                value={editingPhrase.english_text || ''}
+                onChange={(e) => setEditingPhrase({ ...editingPhrase, english_text: e.target.value })}
+                style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: 4 }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', marginBottom: 4, fontWeight: 600 }}>
+                Blank Words (click words below to select multiple)
+              </label>
+              {editingPhrase.korean_text ? (
+                <div style={{ marginTop: 8, fontSize: 16, lineHeight: '1.8' }}>
+                  {editingPhrase.korean_text.trim().split(' ').filter(w => w).map((w, i) => {
+                    const blankIndices = editingPhrase.blank_word_indices || (editingPhrase.blank_word_index !== null && editingPhrase.blank_word_index !== undefined ? [editingPhrase.blank_word_index] : []);
+                      const isSelected = blankIndices.includes(i);
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => {
+                            const words = editingPhrase.korean_text.trim().split(' ').filter(w => w);
+                            if (i < 0 || i >= words.length) return;
+                            const currentIndices = editingPhrase.blank_word_indices || (editingPhrase.blank_word_index !== null && editingPhrase.blank_word_index !== undefined ? [editingPhrase.blank_word_index] : []);
+                            const newIndices = currentIndices.includes(i)
+                              ? currentIndices.filter(idx => idx !== i)
+                              : [...currentIndices, i].sort((a, b) => a - b);
+                            const correctAnswers = newIndices.map(idx => words[idx]);
+                            // Detect word types for blanks
+                            const wordTypes = newIndices.map(idx => {
+                              const word = words[idx];
+                              return detectWordType(word, editingPhrase.grammar_breakdown, words, idx) || null;
+                            });
+                            setEditingPhrase({ ...editingPhrase, blank_word_indices: newIndices, correct_answers: correctAnswers, blank_word_types: wordTypes });
+                          }}
+                          style={{
+                            margin: '0 4px 4px 0',
+                            padding: '6px 12px',
+                            border: isSelected ? '2px solid #3498db' : '1px solid #ddd',
+                            borderRadius: 4,
+                            background: isSelected ? '#e3f2fd' : 'white',
+                            color: isSelected ? '#1976d2' : '#333',
+                            fontWeight: isSelected ? 'bold' : 'normal',
+                            cursor: 'pointer',
+                            fontSize: 14
+                          }}
+                        >
+                          {i}: {w}
+                        </button>
+                      );
+                    })}
+                    <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                      Selected: {(editingPhrase.blank_word_indices || (editingPhrase.blank_word_index !== null && editingPhrase.blank_word_index !== undefined ? [editingPhrase.blank_word_index] : [])).length} word(s)
+                      {editingPhrase.blank_word_indices && editingPhrase.blank_word_indices.length > 0 && (
+                        <div style={{ marginTop: 4 }}>
+                          {editingPhrase.blank_word_indices.map((idx, arrayIdx) => {
+                            const words = editingPhrase.korean_text.trim().split(' ').filter(w => w);
+                            const word = words[idx];
+                            const wordType = editingPhrase.blank_word_types && editingPhrase.blank_word_types[arrayIdx] ? ` (${editingPhrase.blank_word_types[arrayIdx]})` : '';
+                            return (
+                              <span key={idx} style={{ marginRight: 8, fontSize: 11 }}>
+                                {idx}:{word}{wordType}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 8, fontSize: 14, color: '#999' }}>
+                    Enter Korean text above to see selectable words
+                  </div>
+                )}
+              </div>
+              {editingPhrase.blank_word_indices && editingPhrase.blank_word_indices.length > 0 && (
+                <div>
+                  <label style={{ display: 'block', marginBottom: 8, fontWeight: 600 }}>Correct Answers for Each Blank</label>
+                  {editingPhrase.blank_word_indices.map((wordIndex, idx) => {
+                    const words = editingPhrase.korean_text.trim().split(' ').filter(w => w);
+                    const word = words[wordIndex];
+                    const wordType = editingPhrase.blank_word_types && editingPhrase.blank_word_types[idx] ? editingPhrase.blank_word_types[idx] : null;
+                    const currentAnswer = Array.isArray(editingPhrase.correct_answers) && idx < editingPhrase.correct_answers.length 
+                      ? editingPhrase.correct_answers[idx] 
+                      : word; // Default to the word itself if no answer set
+                    return (
+                      <div key={idx} style={{ marginBottom: 8 }}>
+                        <label style={{ display: 'block', fontSize: 12, marginBottom: 4, color: '#666' }}>
+                          Blank {idx + 1}: Word at index {wordIndex} "{word}"{wordType ? ` (${wordType})` : ''}
+                        </label>
+                        <input
+                          type="text"
+                          value={currentAnswer}
+                          onChange={(e) => {
+                            const newAnswers = [...(editingPhrase.correct_answers || [])];
+                            while (newAnswers.length <= idx) {
+                              newAnswers.push('');
+                            }
+                            newAnswers[idx] = e.target.value;
+                            setEditingPhrase({ ...editingPhrase, correct_answers: newAnswers });
+                          }}
+                          placeholder={word}
+                          style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: 4 }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="generate-button" onClick={() => handleUpdate(phrase.id, editingPhrase)}>Save</button>
+                <button className="regenerate-button" onClick={() => { setEditingId(null); setEditingPhrase(null); }}>Cancel</button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      );
+    };
 
   if (loading) {
     return <div className="sentence-box">Loading curriculum phrases...</div>;
@@ -620,198 +828,31 @@ Format the response clearly and structured, using markdown if helpful.`;
       {phrases.length === 0 ? (
         <div className="sentence-box">No curriculum phrases yet. Add some to get started!</div>
       ) : (
-        <div style={{ display: 'grid', gap: 16 }}>
-          {phrases.map((phrase) => {
-            const isEditing = editingId === phrase.id;
-            const words = phrase.korean_text.trim().split(' ').filter(w => w);
-
-            return (
-              <div key={phrase.id} className="sentence-box" style={{ textAlign: 'left' }}>
-                {!isEditing ? (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>
-                        <span className="ko-text">
-                          {getBlankedSentence(phrase.korean_text, phrase.blank_word_indices || (phrase.blank_word_index !== null && phrase.blank_word_index !== undefined ? [phrase.blank_word_index] : []))}
-                        </span>
-                      </div>
-                      <div style={{ color: '#666', marginBottom: 8 }}>{phrase.english_text}</div>
-                      <div style={{ fontSize: 12, color: '#999' }}>
-                        Blank words: {phrase.blank_word_indices?.map((i, idx) => {
-                          const word = words[i];
-                          const wordType = phrase.blank_word_types && phrase.blank_word_types[idx] ? ` (${phrase.blank_word_types[idx]})` : '';
-                          return `${i}:${word}${wordType}`;
-                        }).join(', ') || (phrase.blank_word_index !== null && phrase.blank_word_index !== undefined ? `${phrase.blank_word_index}:${words[phrase.blank_word_index]}` : 'none')}
-                        {phrase.correct_answers && phrase.correct_answers.length > 0 && (
-                          <span> | Answers: {phrase.correct_answers.join(', ')}</span>
-                        )}
-                      </div>
-                      {phrase.grammar_breakdown && (
-                        <details style={{ marginTop: 8, fontSize: 12 }}>
-                          <summary style={{ cursor: 'pointer', color: '#666' }}>Show Grammar Breakdown</summary>
-                          <div 
-                            style={{ 
-                              marginTop: 8, 
-                              padding: '8px', 
-                              background: '#f8f9fa', 
-                              border: '1px solid #ddd', 
-                              borderRadius: 4,
-                              fontSize: 12,
-                              lineHeight: '1.5'
-                            }}
-                            dangerouslySetInnerHTML={{ __html: mdToHtml(phrase.grammar_breakdown) }}
-                          />
-                        </details>
-                      )}
-                      <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
-                        ✓ {phrase.times_correct || 0} | ✗ {phrase.times_incorrect || 0}
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button className="regenerate-button" onClick={() => {
-                        // Ensure blank_word_types is properly initialized when editing
-                        const phraseToEdit = {
-                          ...phrase,
-                          blank_word_types: phrase.blank_word_types || []
-                        };
-                        setEditingId(phrase.id);
-                        setEditingPhrase(phraseToEdit);
-                      }}>Edit</button>
-                      <button className="regenerate-button" onClick={() => handleDelete(phrase.id)}>Delete</button>
-                    </div>
-                  </div>
-                ) : editingPhrase && editingPhrase.id === phrase.id ? (
-                  <div style={{ display: 'grid', gap: 12 }}>
-                    <div>
-                      <label style={{ display: 'block', marginBottom: 4, fontWeight: 600 }}>Korean Text</label>
-                      <input
-                        type="text"
-                        value={editingPhrase.korean_text || ''}
-                        onChange={(e) => setEditingPhrase({ ...editingPhrase, korean_text: e.target.value })}
-                        style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: 4 }}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ display: 'block', marginBottom: 4, fontWeight: 600 }}>English Text</label>
-                      <input
-                        type="text"
-                        value={editingPhrase.english_text || ''}
-                        onChange={(e) => setEditingPhrase({ ...editingPhrase, english_text: e.target.value })}
-                        style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: 4 }}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ display: 'block', marginBottom: 4, fontWeight: 600 }}>
-                        Blank Words (click words below to select multiple)
-                      </label>
-                      {editingPhrase.korean_text ? (
-                        <div style={{ marginTop: 8, fontSize: 16, lineHeight: '1.8' }}>
-                          {editingPhrase.korean_text.trim().split(' ').filter(w => w).map((w, i) => {
-                            const blankIndices = editingPhrase.blank_word_indices || (editingPhrase.blank_word_index !== null && editingPhrase.blank_word_index !== undefined ? [editingPhrase.blank_word_index] : []);
-                            const isSelected = blankIndices.includes(i);
-                            return (
-                              <button
-                                key={i}
-                                type="button"
-                                onClick={() => {
-                                  const words = editingPhrase.korean_text.trim().split(' ').filter(w => w);
-                                  if (i < 0 || i >= words.length) return;
-                                  const currentIndices = editingPhrase.blank_word_indices || (editingPhrase.blank_word_index !== null && editingPhrase.blank_word_index !== undefined ? [editingPhrase.blank_word_index] : []);
-                                  const newIndices = currentIndices.includes(i)
-                                    ? currentIndices.filter(idx => idx !== i)
-                                    : [...currentIndices, i].sort((a, b) => a - b);
-                                  const correctAnswers = newIndices.map(idx => words[idx]);
-                                  // Detect word types for blanks
-                                  const wordTypes = newIndices.map(idx => {
-                                    const word = words[idx];
-                                    return detectWordType(word, editingPhrase.grammar_breakdown, words, idx) || null;
-                                  });
-                                  setEditingPhrase({ ...editingPhrase, blank_word_indices: newIndices, correct_answers: correctAnswers, blank_word_types: wordTypes });
-                                }}
-                                style={{
-                                  margin: '0 4px 4px 0',
-                                  padding: '6px 12px',
-                                  border: isSelected ? '2px solid #3498db' : '1px solid #ddd',
-                                  borderRadius: 4,
-                                  background: isSelected ? '#e3f2fd' : 'white',
-                                  color: isSelected ? '#1976d2' : '#333',
-                                  fontWeight: isSelected ? 'bold' : 'normal',
-                                  cursor: 'pointer',
-                                  fontSize: 14
-                                }}
-                              >
-                                {i}: {w}
-                              </button>
-                            );
-                          })}
-                          <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
-                            Selected: {(editingPhrase.blank_word_indices || (editingPhrase.blank_word_index !== null && editingPhrase.blank_word_index !== undefined ? [editingPhrase.blank_word_index] : [])).length} word(s)
-                            {editingPhrase.blank_word_indices && editingPhrase.blank_word_indices.length > 0 && (
-                              <div style={{ marginTop: 4 }}>
-                                {editingPhrase.blank_word_indices.map((idx, arrayIdx) => {
-                                  const words = editingPhrase.korean_text.trim().split(' ').filter(w => w);
-                                  const word = words[idx];
-                                  const wordType = editingPhrase.blank_word_types && editingPhrase.blank_word_types[arrayIdx] ? ` (${editingPhrase.blank_word_types[arrayIdx]})` : '';
-                                  return (
-                                    <span key={idx} style={{ marginRight: 8, fontSize: 11 }}>
-                                      {idx}:{word}{wordType}
-                                    </span>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      ) : (
-                        <div style={{ marginTop: 8, fontSize: 14, color: '#999' }}>
-                          Enter Korean text above to see selectable words
-                        </div>
-                      )}
-                    </div>
-                    {editingPhrase.blank_word_indices && editingPhrase.blank_word_indices.length > 0 && (
-                      <div>
-                        <label style={{ display: 'block', marginBottom: 8, fontWeight: 600 }}>Correct Answers for Each Blank</label>
-                        {editingPhrase.blank_word_indices.map((wordIndex, idx) => {
-                          const words = editingPhrase.korean_text.trim().split(' ').filter(w => w);
-                          const word = words[wordIndex];
-                          const wordType = editingPhrase.blank_word_types && editingPhrase.blank_word_types[idx] ? editingPhrase.blank_word_types[idx] : null;
-                          const currentAnswer = Array.isArray(editingPhrase.correct_answers) && idx < editingPhrase.correct_answers.length 
-                            ? editingPhrase.correct_answers[idx] 
-                            : word; // Default to the word itself if no answer set
-                          return (
-                            <div key={idx} style={{ marginBottom: 8 }}>
-                              <label style={{ display: 'block', fontSize: 12, marginBottom: 4, color: '#666' }}>
-                                Blank {idx + 1}: Word at index {wordIndex} "{word}"{wordType ? ` (${wordType})` : ''}
-                              </label>
-                              <input
-                                type="text"
-                                value={currentAnswer}
-                                onChange={(e) => {
-                                  const newAnswers = [...(editingPhrase.correct_answers || [])];
-                                  while (newAnswers.length <= idx) {
-                                    newAnswers.push('');
-                                  }
-                                  newAnswers[idx] = e.target.value;
-                                  setEditingPhrase({ ...editingPhrase, correct_answers: newAnswers });
-                                }}
-                                placeholder={word}
-                                style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: 4 }}
-                              />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button className="generate-button" onClick={() => handleUpdate(phrase.id, editingPhrase)}>Save</button>
-                      <button className="regenerate-button" onClick={() => { setEditingId(null); setEditingPhrase(null); }}>Cancel</button>
-                    </div>
-                  </div>
-                ) : null}
+        <>
+          {/* Active phrases (not archived) */}
+          {phrases.filter(p => !p.is_archived).length > 0 && (
+            <div style={{ marginBottom: 32 }}>
+              <h2 style={{ marginBottom: 16, fontSize: 20, fontWeight: 600 }}>Active Phrases</h2>
+              <div style={{ display: 'grid', gap: 16 }}>
+                {phrases.filter(p => !p.is_archived).map((phrase) => {
+                  return renderPhrase(phrase);
+                })}
               </div>
-            );
-          })}
-        </div>
+            </div>
+          )}
+          
+          {/* Archived phrases */}
+          {phrases.filter(p => p.is_archived).length > 0 && (
+            <div style={{ marginTop: 32, paddingTop: 32, borderTop: '2px solid #ddd' }}>
+              <h2 style={{ marginBottom: 16, fontSize: 20, fontWeight: 600, color: '#999' }}>Archived Phrases</h2>
+              <div style={{ display: 'grid', gap: 16 }}>
+                {phrases.filter(p => p.is_archived).map((phrase) => {
+                  return renderPhrase(phrase);
+                })}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

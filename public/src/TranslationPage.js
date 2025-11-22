@@ -1,10 +1,14 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
+import { api } from './api';
 import TranslationBox from './TranslationBox';
-import './TranslationPage.css';
+import './styles/TranslationPage.css';
 
 function TranslationPage() {
   const [lastContext, setLastContext] = React.useState(null); // {input, translation}
+  const [explanation, setExplanation] = React.useState('');
+  const [loadingExplanation, setLoadingExplanation] = React.useState(false);
+  const [addStatus, setAddStatus] = React.useState('');
 
   const handleTranslated = React.useCallback(({ input, translation }) => {
     setLastContext({ input, translation });
@@ -50,6 +54,59 @@ function TranslationPage() {
     return htmlParts.join('');
   };
 
+  // Fetch explanation when we have context
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        setAddStatus('');
+        if (!lastContext || !lastContext.input || !lastContext.translation) {
+          if (!cancelled) setExplanation('');
+          return;
+        }
+        if (!cancelled) setLoadingExplanation(true);
+        const prompt = `Explain the Korean translation in detail.
+Original (user): ${lastContext.input}
+Translation (ko): ${lastContext.translation}
+Please include a clear breakdown of grammar (particles, tense, politeness), vocabulary with brief glosses, and any pronunciation notes.
+Keep it concise and structured for a learner.`;
+        const res = await api.chat(prompt);
+        if (!cancelled) {
+          if (res.ok) {
+            const data = await res.json().catch(() => ({}));
+            setExplanation(String((data && data.response) || ''));
+          } else {
+            setExplanation('');
+          }
+        }
+      } catch (_) {
+        if (!cancelled) setExplanation('');
+      } finally {
+        if (!cancelled) setLoadingExplanation(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [lastContext]);
+
+  const handleAddToCurriculum = React.useCallback(async () => {
+    try {
+      if (!lastContext || !lastContext.input || !lastContext.translation) return;
+      setAddStatus('Adding…');
+      const res = await api.addCurriculumPhrase({
+        korean_text: lastContext.translation,
+        english_text: lastContext.input
+      });
+      if (res.ok) {
+        setAddStatus('Added to curriculum ✓');
+      } else {
+        const t = await res.text().catch(() => '');
+        setAddStatus('Failed to add' + (t ? `: ${t}` : ''));
+      }
+    } catch (_) {
+      setAddStatus('Failed to add');
+    }
+  }, [lastContext]);
+
   return (
     <div className="translation-page">
       <div className="translation-container">
@@ -64,9 +121,25 @@ function TranslationPage() {
 
         <div className="translation-card" style={{ marginTop: 12 }}>
           <h2 style={{ marginTop: 0 }}>Explanation & Questions</h2>
-          <p style={{ color: '#6b7280', margin: 0 }}>
-            Open the dedicated chat to get explanations and ask questions about your latest translation.
-          </p>
+          {!lastContext && (
+            <p style={{ color: '#6b7280', margin: 0 }}>
+              Open the dedicated chat to get explanations and ask questions about your latest translation.
+            </p>
+          )}
+          {lastContext && (
+            <div style={{ marginTop: 8 }}>
+              {loadingExplanation ? (
+                <p style={{ margin: '4px 0', color: '#6b7280' }}>Loading explanation…</p>
+              ) : explanation ? (
+                <div
+                  style={{ lineHeight: '1.6' }}
+                  dangerouslySetInnerHTML={{ __html: mdToHtml(explanation) }}
+                />
+              ) : (
+                <p style={{ margin: '4px 0', color: '#6b7280' }}>No explanation available.</p>
+              )}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
             <Link
               className="translation-link"
@@ -74,6 +147,17 @@ function TranslationPage() {
             >
               Open Chat
             </Link>
+            <button
+              type="button"
+              className="translation-link"
+              onClick={handleAddToCurriculum}
+              disabled={!lastContext}
+            >
+              Add to Curriculum
+            </button>
+            {addStatus && (
+              <span style={{ alignSelf: 'center', color: '#6b7280' }}>{addStatus}</span>
+            )}
             {!lastContext && (
               <span style={{ alignSelf: 'center', color: '#6b7280' }}>Translate something first to pass context.</span>
             )}

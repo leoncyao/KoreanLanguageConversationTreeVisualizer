@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import './PronunciationPage.css';
+import './styles/PronunciationPage.css';
 
 const CONSONANTS = [
   { ch: 'ㄱ', name: 'g/k', sample: '가' },

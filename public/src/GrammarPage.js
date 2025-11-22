@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from './api';
-import './GrammarPage.css';
+import './styles/GrammarPage.css';
 
 function Rule({ id, title, description, example_korean, example_english, model_korean, model_english, onUseModel, onDelete }) {
   return (

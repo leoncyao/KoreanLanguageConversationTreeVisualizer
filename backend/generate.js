@@ -29,6 +29,12 @@ async function handleGenerateVariations(req, res) {
 
 Generate 5 diverse sentence variations in Korean that are NATURAL and CLEARLY DIFFERENT from the model:
 
+CRITICAL: For any numbers in Korean sentences, use Korean words (not Arabic numerals):
+- For time (시, 시간): use Native Korean (하나, 둘, 셋, 넷, 다섯, 여섯, 일곱, 여덟, 아홉, 열, etc.). Example: "9시" should be "아홉 시"
+- For counting objects: use Native Korean (하나, 둘, 셋, etc.)
+- For dates, money, general counting: use Sino-Korean (일, 이, 삼, 사, 오, 육, 칠, 팔, 구, 십, etc.)
+NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Korean words.
+
 Strong requirements for DIVERSITY:
 1) Change the main verb in MOST variations (avoid repeating the model's verb). Use different actions (e.g., buy, lose, find, lend, borrow, carry, need, want, can, must, etc.).
 2) Replace core nouns with DIFFERENT categories (not trivial synonyms). If the model mentions book/pen, use unrelated objects (e.g., ticket, backpack, umbrella, camera, invitation, homework, appointment, bus, dinner, gym).
