@@ -164,10 +164,12 @@ export async function playQuizModeHandsFree({
         sentencesWithPairs = batch3.map(item => ({
           english: String(item.english || ''),
           korean: String(item.korean || ''),
-          wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
-            ko: String(pair.ko || pair.korean || ''),
-            en: String(pair.en || pair.english || '')
-          })) : []
+          wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => {
+            // Only include ko and en fields, explicitly exclude korean and english
+            const ko = String(pair.ko || pair.korean || '').trim();
+            const en = String(pair.en || pair.english || '').trim();
+            return { ko, en };
+          }).filter(p => p.ko && p.en) : []
         }));
         setLevel3AudioProgress(50);
       } else {

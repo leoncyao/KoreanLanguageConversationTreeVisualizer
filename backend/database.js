@@ -242,6 +242,15 @@ class Database {
         );
         CREATE INDEX IF NOT EXISTS idx_conversations_owner_created ON conversations(owner, created_at DESC);
 
+        -- Playlists table (stores playlist of conversation IDs)
+        CREATE TABLE IF NOT EXISTS playlists (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          conversation_ids_json TEXT NOT NULL, -- JSON array of conversation IDs in order
+          current_index INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
         -- Mix mode table (stores current mix state and index)
         CREATE TABLE IF NOT EXISTS mix_state (
           id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -345,6 +354,31 @@ class Database {
     });
   }
 
+  async getConversation(id) {
+    return new Promise((resolve, reject) => {
+      const sql = `SELECT id, owner, title, items_json, created_at, updated_at FROM conversations WHERE id = ?`;
+      this.db.get(sql, [id], (err, row) => {
+        if (err) return reject(err);
+        if (!row) {
+          resolve(null);
+          return;
+        }
+        try {
+          resolve({
+            id: row.id,
+            owner: row.owner,
+            title: row.title,
+            items: JSON.parse(row.items_json || '[]'),
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+          });
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+  }
+
   async updateConversation(id, owner, { title, items }) {
     return new Promise((resolve, reject) => {
       const setParts = [];
@@ -366,6 +400,44 @@ class Database {
       this.db.run(sql, params, function(err) {
         if (err) return reject(err);
         resolve(this.changes || 0);
+      });
+    });
+  }
+
+  // Playlist methods
+  async savePlaylist(conversationIds, currentIndex = 0) {
+    return new Promise((resolve, reject) => {
+      const idsJson = JSON.stringify(Array.isArray(conversationIds) ? conversationIds : []);
+      // Use INSERT OR REPLACE since there's only one playlist (id = 1)
+      const sql = `
+        INSERT OR REPLACE INTO playlists (id, conversation_ids_json, current_index, updated_at)
+        VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+      `;
+      this.db.run(sql, [idsJson, currentIndex], function(err) {
+        if (err) return reject(err);
+        resolve(this.changes || 0);
+      });
+    });
+  }
+
+  async getPlaylist() {
+    return new Promise((resolve, reject) => {
+      this.db.get('SELECT conversation_ids_json, current_index, created_at, updated_at FROM playlists WHERE id = 1', [], (err, row) => {
+        if (err) return reject(err);
+        if (!row) {
+          resolve(null);
+          return;
+        }
+        try {
+          resolve({
+            conversationIds: JSON.parse(row.conversation_ids_json || '[]'),
+            currentIndex: row.current_index || 0,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+          });
+        } catch (e) {
+          reject(e);
+        }
       });
     });
   }
@@ -1458,6 +1530,7 @@ class Database {
       });
     });
   }
+
 
   async getGrammarRules(limit = 200) {
     return new Promise((resolve, reject) => {

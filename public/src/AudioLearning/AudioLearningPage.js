@@ -14,10 +14,47 @@ import { speakToAudio } from './audioTTS';
 import { generateAndPlayLoop, stopLoop, pauseLoop, resumeLoop } from './audioLoop';
 import { generateVerbPracticeSentence } from './verbPractice';
 import { generateConversationSet } from './conversationGenerator';
-import { prepareLevel3AudioData, generateLevel3Audio, AUDIO_PATTERN } from './audioPattern';
+import { generateLevel3Audio, prepareLevel3AudioData } from './audioPattern';
 import { playLearningMode } from './audioLearningMode';
 import { playQuizModeHandsFree } from './audioQuizModeHandsFree';
 import { playQuizModeRecording } from './audioQuizModeRecording';
+import { useRecording } from './hooks/useRecording';
+import { useConsoleErrors } from './hooks/useConsoleErrors';
+import { useMediaSession } from './hooks/useMediaSession';
+import { createPlayConversationAudio } from './audio/conversationAudio';
+import SentenceDisplay from './components/SentenceDisplay';
+import ConversationList from './components/ConversationList';
+import WordSetManager from './components/WordSetManager';
+import ConsoleErrors from './components/ConsoleErrors';
+import NewConversationForm from './components/NewConversationForm';
+import { generateQuizSentence } from './utils/quizSentenceGenerator';
+import { createHandleStartQuizLoop } from './handlers/quizLoopHandler';
+import { createHandlePlayCurrentConversation } from './handlers/playCurrentConversationHandler';
+import { createHandleGenerateSet, createSaveGeneratedSet, createPlaySet } from './handlers/wordSetHandlers';
+import {
+  pickRandomPronoun,
+  conjugateVerbSimple,
+  applyPronounAndTenseIfVerb,
+  hasFinalConsonant,
+  pickRandomVerb,
+  pickRandomNoun,
+  pickRandomAdjective,
+  englishPresent3rd,
+  englishPast,
+  buildSubjectAndVerbPair,
+  buildPronounAndVerbPair,
+  buildVerbWithDateSentence,
+  buildNounAndAdjectiveSentence,
+} from './utils/verbHelpers';
+import {
+  parseJsonObject,
+  parseJsonArraySafe,
+  pickRandom,
+  getWordByWordPairs,
+  getCurriculumSentence,
+  generateLearningSentence,
+  generateEnglishWordIndices,
+} from './utils/sentenceGenerators';
 
 // Use speakToAudio for background playback support (HTML5 Audio + MediaSession)
 const speak = speakToAudio;
@@ -45,11 +82,6 @@ function AudioLearningPage() {
       return 'hands-free';
     }
   });
-  const [isMicRecording, setIsMicRecording] = React.useState(false);
-  const recorderRef = React.useRef(null);
-  const mediaStreamRef = React.useRef(null);
-  const recordedChunksRef = React.useRef([]);
-  const [recordedUrl, setRecordedUrl] = React.useState('');
   const [currentQuizWord, setCurrentQuizWord] = React.useState(null);
   const [currentQuizSentence, setCurrentQuizSentence] = React.useState(null);
   const [quizDelaySec, setQuizDelaySec] = React.useState(() => {
@@ -76,15 +108,26 @@ function AudioLearningPage() {
       return 3;
     }
   });
-  const recognitionRef = React.useRef(null);
-  const recognizedRef = React.useRef('');
-  const [recognizedText, setRecognizedText] = React.useState('');
-  const [recordingError, setRecordingError] = React.useState('');
+  // Recording hook
+  const {
+    isMicRecording,
+    recordedUrl,
+    recordingError,
+    recognizedText,
+    recognizedRef,
+    checkRecordingSupport,
+    startMicRecording,
+    stopMicRecording,
+    playRecorded,
+    startSpeechRecognition,
+    stopSpeechRecognition,
+    recorderRef,
+    mediaStreamRef,
+  } = useRecording();
   
   // Console error tracking for mobile debugging
-  const [consoleErrors, setConsoleErrors] = React.useState([]);
+  const { consoleErrors, setConsoleErrors, consoleErrorRef } = useConsoleErrors();
   const [showErrorPanel, setShowErrorPanel] = React.useState(false);
-  const consoleErrorRef = React.useRef([]);
   // Track if autoplay was blocked (for Brave browser)
   const [autoplayBlocked, setAutoplayBlocked] = React.useState(false);
 
@@ -148,54 +191,111 @@ function AudioLearningPage() {
   // Playlist state
   const [playlist, setPlaylist] = React.useState([]); // Array of conversation objects
   const [playlistIndex, setPlaylistIndex] = React.useState(-1); // Current index in playlist (-1 = no playlist)
-  const [isPlaylistMode, setIsPlaylistMode] = React.useState(false);
+  const [isPlaylistMode, setIsPlaylistMode] = React.useState(true); // Always in playlist mode by default
   // Refs for playlist navigation functions to break circular dependency
   const playNextConversationRef = React.useRef(null);
   const playPreviousConversationRef = React.useRef(null);
   const playConversationAudioRef = React.useRef(null);
   
-  // Generate single audio file for a conversation set (KO→EN order)
+  // Save playlist to database (defined early so it can be used in navigation functions)
+  const savePlaylist = React.useCallback(async (conversationIds, currentIndex = 0) => {
+    try {
+      const res = await fetch('/api/playlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationIds, currentIndex })
+      });
+      if (!res.ok) {
+        console.warn('Failed to save playlist');
+      }
+    } catch (_) {
+      console.warn('Error saving playlist');
+    }
+  }, []);
+
+  // Load playlist from database
+  const loadPlaylist = React.useCallback(async () => {
+    try {
+      const res = await fetch('/api/playlist', { cache: 'no-store' });
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => null);
+      return data;
+    } catch (_) {
+      return null;
+    }
+  }, []);
+  
+  // Sentence generators - using extracted utilities (defined early for use in generateLevel3AudioForItems)
+  const getWordByWordPairsMemo = React.useCallback(async (english, korean) => 
+    getWordByWordPairs(api, english, korean), []);
+  
+  // Generate Level 3 audio for a conversation set (always use Level 3, never regular conversation audio)
   // Defined early so it can be used in playlist navigation functions
-  const generateConversationAudio = React.useCallback(async (items) => {
+  const generateLevel3AudioForItems = React.useCallback(async (items) => {
     try {
       // If items not provided, use generatedSentences
       const list = Array.isArray(items) ? items : (Array.isArray(generatedSentences) ? generatedSentences : []);
       if (!list || list.length === 0) return null;
-      const res = await fetch('/api/tts/conversation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: list.map(s => ({ korean: String(s.korean || ''), english: String(s.english || '') })),
-          order: 'en-ko',
-          delaySeconds: Math.max(0, Number(quizDelaySec) || 0)
-        })
-      });
-      if (!res.ok) throw new Error('Failed to generate conversation audio');
-      const data = await res.json().catch(() => null);
-      const url = data && data.url ? data.url : '';
-      if (url) {
-        setConversationAudioUrl(url);
-        try { console.log('[ConversationAudio] url', url); } catch (_) {}
-        return url;
+      
+      // Check if items already have wordPairs
+      const hasWordPairs = list.every(item => Array.isArray(item.wordPairs) && item.wordPairs.length > 0);
+      
+      let sentencesWithPairs;
+      if (hasWordPairs) {
+        // Use existing word pairs
+        sentencesWithPairs = list.map(item => ({
+          english: String(item.english || ''),
+          korean: String(item.korean || ''),
+          wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+            ko: String(pair.ko || pair.korean || '').trim(),
+            en: String(pair.en || pair.english || '').trim()
+          })).filter(p => p.ko && p.en) : []
+        }));
+      } else {
+        // Generate word pairs for all sentences
+        sentencesWithPairs = await prepareLevel3AudioData(
+          list,
+          getWordByWordPairsMemo,
+          () => {} // No progress callback needed here
+        );
+      }
+      
+      // Generate Level 3 audio
+      const audioUrl = await generateLevel3Audio(sentencesWithPairs, Math.max(0, Number(quizDelaySec) || 0.5));
+      if (audioUrl) {
+        setConversationAudioUrl(audioUrl);
+        try { console.log('[Level3Audio] url', audioUrl); } catch (_) {}
+        return audioUrl;
       }
       return null;
     } catch (err) {
-      console.error('generateConversationAudio error:', err);
+      console.error('generateLevel3AudioForItems error:', err);
       setConversationAudioUrl('');
       return null;
     }
-  }, [generatedSentences, quizDelaySec]);
+  }, [generatedSentences, quizDelaySec, getWordByWordPairsMemo, generateLevel3Audio]);
   
   // Navigate to next conversation in playlist
   const playNextConversation = React.useCallback(async () => {
-    if (!isPlaylistMode || playlist.length === 0 || playlistIndex < 0) return;
+    console.log('[playNextConversation] Called:', { isPlaylistMode, playlistLength: playlist.length, playlistIndex });
+    if (!isPlaylistMode || playlist.length === 0 || playlistIndex < 0) {
+      console.log('[playNextConversation] Early return:', { isPlaylistMode, playlistLength: playlist.length, playlistIndex });
+      return;
+    }
     const nextIndex = (playlistIndex + 1) % playlist.length;
     setPlaylistIndex(nextIndex);
+    // Save playlist index to database
+    const conversationIds = playlist.map(c => c.id).filter(Boolean);
+    if (conversationIds.length > 0) {
+      await savePlaylist(conversationIds, nextIndex);
+    }
     const nextConv = playlist[nextIndex];
     if (!nextConv) return;
     
     // Load and play the next conversation
     setGeneratedSentences(nextConv.items || []);
+    setCurrentConversationId(nextConv.id || null);
+    setCurrentConversationTitle(nextConv.title);
     if (nextConv.audioUrl) {
       setConversationAudioUrl(nextConv.audioUrl);
       // Stop current audio
@@ -206,15 +306,15 @@ function AudioLearningPage() {
           audio.currentTime = 0;
         }
       } catch (_) {}
-      // Play next conversation
+      // Play next conversation and update MediaSession
       if (playConversationAudioRef.current) {
         await playConversationAudioRef.current(false, nextConv.audioUrl, nextConv.title);
       }
     } else {
-      // Generate audio for next conversation
+      // Generate Level 3 audio for next conversation
       setConversationAudioUrl('');
       try {
-        const audioUrl = await generateConversationAudio(nextConv.items);
+        const audioUrl = await generateLevel3AudioForItems(nextConv.items);
         if (audioUrl) {
           setConversationAudioUrl(audioUrl);
           // Update the saved conversation with the new audio URL
@@ -228,7 +328,7 @@ function AudioLearningPage() {
         }
       } catch (_) {}
     }
-  }, [isPlaylistMode, playlist, playlistIndex, generateConversationAudio, persistConversations, savedConversations]);
+  }, [isPlaylistMode, playlist, playlistIndex, generateLevel3AudioForItems, persistConversations, savedConversations, savePlaylist]);
   
   // Update ref after function is defined
   React.useEffect(() => {
@@ -237,15 +337,25 @@ function AudioLearningPage() {
   
   // Navigate to previous conversation in playlist
   const playPreviousConversation = React.useCallback(async () => {
-    if (!isPlaylistMode || playlist.length === 0 || playlistIndex < 0) return;
+    console.log('[playPreviousConversation] Called:', { isPlaylistMode, playlistLength: playlist.length, playlistIndex });
+    if (!isPlaylistMode || playlist.length === 0 || playlistIndex < 0) {
+      console.log('[playPreviousConversation] Early return:', { isPlaylistMode, playlistLength: playlist.length, playlistIndex });
+      return;
+    }
     const prevIndex = playlistIndex === 0 ? playlist.length - 1 : playlistIndex - 1;
     setPlaylistIndex(prevIndex);
+    // Save playlist index to database
+    const conversationIds = playlist.map(c => c.id).filter(Boolean);
+    if (conversationIds.length > 0) {
+      await savePlaylist(conversationIds, prevIndex);
+    }
     const prevConv = playlist[prevIndex];
     if (!prevConv) return;
     
     // Load and play the previous conversation
     setGeneratedSentences(prevConv.items || []);
     setCurrentConversationId(prevConv.id || null);
+    setCurrentConversationTitle(prevConv.title);
     if (prevConv.audioUrl) {
       setConversationAudioUrl(prevConv.audioUrl);
       // Stop current audio
@@ -256,15 +366,15 @@ function AudioLearningPage() {
           audio.currentTime = 0;
         }
       } catch (_) {}
-      // Play previous conversation
+      // Play previous conversation and update MediaSession
       if (playConversationAudioRef.current) {
         await playConversationAudioRef.current(false, prevConv.audioUrl, prevConv.title);
       }
     } else {
-      // Generate audio for previous conversation
+      // Generate Level 3 audio for previous conversation
       setConversationAudioUrl('');
       try {
-        const audioUrl = await generateConversationAudio(prevConv.items);
+        const audioUrl = await generateLevel3AudioForItems(prevConv.items);
         if (audioUrl) {
           setConversationAudioUrl(audioUrl);
           // Update the saved conversation with the new audio URL
@@ -278,7 +388,7 @@ function AudioLearningPage() {
         }
       } catch (_) {}
     }
-  }, [isPlaylistMode, playlist, playlistIndex, generateConversationAudio, persistConversations, savedConversations]);
+  }, [isPlaylistMode, playlist, playlistIndex, generateLevel3AudioForItems, persistConversations, savedConversations, savePlaylist]);
   
   // Update ref after function is defined
   React.useEffect(() => {
@@ -295,13 +405,37 @@ function AudioLearningPage() {
       if (!res.ok) return;
       const list = await res.json().catch(() => []);
       if (!Array.isArray(list)) return;
-      const normalized = list.map((c) => ({
+      const normalized = list.map((c) => {
+        const items = Array.isArray(c.items) ? c.items.map(item => {
+          const wordPairs = Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => {
+            // Only include ko and en fields, explicitly exclude korean and english
+            const ko = String(pair.ko || pair.korean || '').trim();
+            const en = String(pair.en || pair.english || '').trim();
+            return { ko, en };
+          }).filter(p => p.ko && p.en) : [];
+          // Debug: log if wordPairs are missing when loading
+          if (wordPairs.length === 0 && item.korean && item.english) {
+            console.warn('[fetchServerConversations] No wordPairs found for item:', { 
+              korean: item.korean, 
+              english: item.english,
+              rawItem: item
+            });
+          }
+          return {
+            korean: String(item.korean || ''),
+            english: String(item.english || ''),
+            wordPairs,
+            englishWordMapping: item.englishWordMapping || {}
+          };
+        }) : [];
+        return {
         id: c.id,
         title: String(c.title || 'Untitled'),
-        items: Array.isArray(c.items) ? c.items : [],
+          items,
         audioUrl: String(c.audio_url || c.audioUrl || '').trim() || null,
         createdAt: Date.parse(c.created_at || '') || Date.now()
-      }));
+        };
+      });
       persistConversations(normalized);
     } catch (_) {}
   }, [persistConversations]);
@@ -354,20 +488,48 @@ function AudioLearningPage() {
             setGeneratedSentences(itemsWithWordPairs);
             setCurrentConversationId(convToLoad.id || null);
             
-            // Auto-generate audio if not available
-            if (convToLoad.audioUrl) {
-              setConversationAudioUrl(convToLoad.audioUrl);
-            } else {
-              // Generate audio automatically
+            // Auto-generate audio - always regenerate Level 3 if wordPairs exist to ensure word pairs are included
+            const hasWordPairs = itemsWithWordPairs.every(item => Array.isArray(item.wordPairs) && item.wordPairs.length > 0);
+            const isLevel3 = (Number(quizDifficulty) || 1) === 3;
+            
+            if (hasWordPairs && isLevel3) {
+              // Always regenerate Level 3 audio with word pairs to ensure they're included
               (async () => {
                 try {
-                  const audioUrl = await generateConversationAudio(items);
+                  const sentencesWithPairs = itemsWithWordPairs.map(item => ({
+                    english: String(item.english || ''),
+                    korean: String(item.korean || ''),
+                    wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+                      ko: String(pair.ko || pair.korean || ''),
+                      en: String(pair.en || pair.english || '')
+                    })) : []
+                  }));
+                  const audioUrl = await generateLevel3Audio(sentencesWithPairs, Math.max(0, Number(quizDelaySec) || 0.5));
                   if (audioUrl) {
                     // Update the saved conversation with the new audio URL
                     const next = savedConversations.map(x => 
                       x.id === convToLoad.id ? { ...x, audioUrl } : x
                     );
                     persistConversations(next);
+                    setConversationAudioUrl(audioUrl);
+                  }
+                } catch (_) {}
+              })();
+            } else if (convToLoad.audioUrl) {
+              // Use existing Level 3 audio
+              setConversationAudioUrl(convToLoad.audioUrl);
+            } else {
+              // Generate Level 3 audio if no audioUrl exists
+              (async () => {
+                try {
+                  const audioUrl = await generateLevel3AudioForItems(items);
+                  if (audioUrl) {
+                    // Update the saved conversation with the new audio URL
+                    const next = savedConversations.map(x => 
+                      x.id === convToLoad.id ? { ...x, audioUrl } : x
+                    );
+                    persistConversations(next);
+                    setConversationAudioUrl(audioUrl);
                   }
                 } catch (_) {}
               })();
@@ -376,7 +538,100 @@ function AudioLearningPage() {
         }
       }
     } catch (_) {}
-  }, [savedConversations, defaultConversationId, generateConversationAudio, persistConversations, setDefaultConversation]); 
+  }, [savedConversations, defaultConversationId, generateLevel3AudioForItems, generateLevel3Audio, quizDifficulty, quizDelaySec, persistConversations, setDefaultConversation]);
+
+  // Auto-create and save playlist when conversations are available (always in playlist mode)
+  React.useEffect(() => {
+    if (savedConversations && savedConversations.length > 0 && playlist.length === 0) {
+      // Check if playlist exists in database first
+      (async () => {
+        try {
+          const playlistData = await loadPlaylist();
+          if (!playlistData || !playlistData.conversationIds || playlistData.conversationIds.length === 0) {
+            // No playlist in database, auto-create from all conversations
+            const conversationIds = savedConversations.map(c => c.id).filter(Boolean);
+            if (conversationIds.length > 0) {
+              setPlaylist(savedConversations);
+              setPlaylistIndex(0);
+              setIsPlaylistMode(true);
+              // Save to database
+              await savePlaylist(conversationIds, 0);
+            }
+          }
+        } catch (_) {}
+      })();
+    }
+  }, [savedConversations, playlist.length, savePlaylist, loadPlaylist]);
+
+  // Update playlist when savedConversations changes (sync playlist with current conversations)
+  React.useEffect(() => {
+    if (!isPlaylistMode) return;
+    
+    if (!savedConversations || savedConversations.length === 0) {
+      // If no conversations, clear playlist
+      setPlaylist([]);
+      setPlaylistIndex(-1);
+      return;
+    }
+    
+    // Update playlist to match current savedConversations
+    // Keep the current index if the conversation still exists, otherwise adjust
+    (async () => {
+      try {
+        const conversationIds = savedConversations.map(c => c.id).filter(Boolean);
+        if (conversationIds.length === 0) {
+          setPlaylist([]);
+          setPlaylistIndex(-1);
+          return;
+        }
+        
+        // Update playlist to include all current conversations
+        setPlaylist(savedConversations);
+        
+        // Adjust playlist index if current conversation was deleted
+        setPlaylistIndex(prevIndex => {
+          let newIndex;
+          if (prevIndex >= savedConversations.length) {
+            newIndex = Math.max(0, savedConversations.length - 1);
+          } else if (prevIndex >= 0 && prevIndex < savedConversations.length) {
+            // Current index is still valid, keep it
+            newIndex = prevIndex;
+          } else {
+            // Invalid index, reset to 0
+            newIndex = 0;
+          }
+          
+          // Save updated playlist to database
+          savePlaylist(conversationIds, newIndex);
+          return newIndex;
+        });
+      } catch (_) {}
+    })();
+  }, [savedConversations, isPlaylistMode, savePlaylist]);
+
+  // Load playlist on mount (after conversations are loaded)
+  React.useEffect(() => {
+    if (!savedConversations || savedConversations.length === 0) return;
+    
+    (async () => {
+      try {
+        const playlistData = await loadPlaylist();
+        if (playlistData && playlistData.conversationIds && playlistData.conversationIds.length > 0) {
+          // Find conversations by IDs
+          const playlistConversations = playlistData.conversationIds
+            .map(id => savedConversations.find(c => String(c.id) === String(id)))
+            .filter(Boolean);
+          
+          if (playlistConversations.length > 0) {
+            setPlaylist(playlistConversations);
+            setPlaylistIndex(Math.max(0, Math.min(playlistData.currentIndex || 0, playlistConversations.length - 1)));
+            setIsPlaylistMode(true);
+          }
+        }
+      } catch (_) {}
+    })();
+  }, [savedConversations, loadPlaylist]); // Run when conversations are loaded
+
   // On mount, try to sync from server so other devices are visible
   React.useEffect(() => {
     (async () => {
@@ -418,429 +673,53 @@ function AudioLearningPage() {
     try { const arr = JSON.parse(m[0]); return Array.isArray(arr) ? arr : []; } catch (_) { return []; }
   };
 
-  // --- Verb conjugation + pronoun helpers (very simple heuristic) ---
-  const PRONOUNS = React.useMemo(() => [
-    { ko: '나는', en: 'I' },
-    { ko: '너는', en: 'you' },
-    { ko: '우리는', en: 'we' },
-    { ko: '그는', en: 'he' },
-    { ko: '그녀는', en: 'she' },
-    { ko: '그들은', en: 'they' },
-  ], []);
+  // Verb helpers - memoized callbacks using extracted utilities
+  const pickRandomPronounMemo = React.useCallback(() => pickRandomPronoun(), []);
+  const conjugateVerbSimpleMemo = React.useCallback((baseForm, tense) => conjugateVerbSimple(baseForm, tense), []);
+  const applyPronounAndTenseIfVerbMemo = React.useCallback((wordObj) => 
+    applyPronounAndTenseIfVerb(wordObj, pickRandomPronounMemo, conjugateVerbSimpleMemo), 
+    [pickRandomPronounMemo, conjugateVerbSimpleMemo]
+  );
+  const hasFinalConsonantMemo = React.useCallback((k) => hasFinalConsonant(k), []);
+  const pickRandomVerbMemo = React.useCallback((words) => pickRandomVerb(words), []);
+  const pickRandomNounMemo = React.useCallback((words) => pickRandomNoun(words), []);
+  const pickRandomAdjectiveMemo = React.useCallback((words) => pickRandomAdjective(words), []);
+  const englishPresent3rdMemo = React.useCallback((base) => englishPresent3rd(base), []);
+  const englishPastMemo = React.useCallback((base) => englishPast(base), []);
+  const buildSubjectAndVerbPairMemo = React.useCallback((words) => 
+    buildSubjectAndVerbPair(words, pickRandomPronounMemo, pickRandomNounMemo, pickRandomVerbMemo, hasFinalConsonantMemo, conjugateVerbSimpleMemo, englishPresent3rdMemo, englishPastMemo),
+    [pickRandomPronounMemo, pickRandomNounMemo, pickRandomVerbMemo, hasFinalConsonantMemo, conjugateVerbSimpleMemo, englishPresent3rdMemo, englishPastMemo]
+  );
+  const buildPronounAndVerbPairMemo = React.useCallback((words) => 
+    buildPronounAndVerbPair(words, pickRandomPronounMemo, pickRandomVerbMemo, conjugateVerbSimpleMemo, englishPresent3rdMemo, englishPastMemo),
+    [pickRandomPronounMemo, pickRandomVerbMemo, conjugateVerbSimpleMemo, englishPresent3rdMemo, englishPastMemo]
+  );
+  const buildVerbWithDateSentenceMemo = React.useCallback((words) => 
+    buildVerbWithDateSentence(words, pickRandomPronounMemo, pickRandomVerbMemo, conjugateVerbSimpleMemo, englishPresent3rdMemo, englishPastMemo),
+    [pickRandomPronounMemo, pickRandomVerbMemo, conjugateVerbSimpleMemo, englishPresent3rdMemo, englishPastMemo]
+  );
+  const buildNounAndAdjectiveSentenceMemo = React.useCallback((words) => 
+    buildNounAndAdjectiveSentence(words, pickRandomNounMemo, pickRandomAdjectiveMemo, hasFinalConsonantMemo, conjugateVerbSimpleMemo),
+    [pickRandomNounMemo, pickRandomAdjectiveMemo, hasFinalConsonantMemo, conjugateVerbSimpleMemo]
+  );
 
-  const pickRandomPronoun = React.useCallback(() => PRONOUNS[Math.floor(Math.random() * PRONOUNS.length)], [PRONOUNS]);
+  const handleGenerateSet = React.useCallback(
+    createHandleGenerateSet(api, generatorPrompt, generatedSetTitle, setGeneratorLoading, setGeneratedWords, setGeneratedSetTitle),
+    [api, generatorPrompt, generatedSetTitle, setGeneratorLoading, setGeneratedWords, setGeneratedSetTitle]
+  );
 
-  const endsWithBrightVowel = (stem) => /[ㅏㅗ]$/.test(stem);
+  const saveGeneratedSet = React.useCallback(
+    createSaveGeneratedSet(generatedWords, generatedSetTitle, wordSets, persistSets, setShowGenerator, setGeneratedWords),
+    [generatedWords, generatedSetTitle, wordSets, persistSets, setShowGenerator, setGeneratedWords]
+  );
 
-  const conjugateVerbSimple = React.useCallback((baseForm, tense) => {
-    if (!baseForm || typeof baseForm !== 'string') return baseForm;
-    const stem = baseForm.endsWith('다') ? baseForm.slice(0, -1 * '다'.length) : baseForm;
-    // 하다 special
-    if (baseForm === '하다' || stem.endsWith('하')) {
-      if (tense === 'present') return '해요';
-      if (tense === 'past') return '했어요';
-      return '할 거예요';
-    }
-    const bright = endsWithBrightVowel(stem);
-    if (tense === 'present') return stem + (bright ? '아요' : '어요');
-    if (tense === 'past') return stem + (bright ? '았어요' : '었어요');
-    // future
-    const needsEu = /[^aeiou가-힣]$/.test(stem) || /[ㄱ-ㅎ]$/.test(stem); // rough guard
-    return stem + (stem.endsWith('ㄹ') ? ' 거예요' : (needsEu ? '을 거예요' : 'ㄹ 거예요'));
-  }, []);
+  const playSet = React.useCallback(
+    createPlaySet(quizDelaySec, setIsQuizLooping, playingRef, pausedRef, quizLoopRef, setCurrentSetWords, setLoopGenerating, setLoopProgress),
+    [quizDelaySec, setIsQuizLooping, playingRef, pausedRef, quizLoopRef, setCurrentSetWords, setLoopGenerating, setLoopProgress]
+  );
 
-  const applyPronounAndTenseIfVerb = React.useCallback((wordObj) => {
-    if (!wordObj || !wordObj.korean) return wordObj;
-    // Only apply if type says 'verb' (learning words) or looks like dictionary form ending in 다
-    const isVerb = String(wordObj.type || '').toLowerCase() === 'verb' || /다$/.test(wordObj.korean);
-    if (!isVerb) return wordObj;
-    const tenses = ['present', 'past', 'future'];
-    const tense = tenses[Math.floor(Math.random() * tenses.length)];
-    const pron = pickRandomPronoun();
-    const conj = conjugateVerbSimple(wordObj.korean, tense);
-    return { ...wordObj, korean: `${pron.ko} ${conj}` };
-  }, [pickRandomPronoun, conjugateVerbSimple]);
-
-  // Helpers for Level 2: subject (pronoun or noun) + conjugated verb phrase
-  const hasFinalConsonant = React.useCallback((k) => {
-    if (!k || typeof k !== 'string') return false;
-    const ch = k.trim().slice(-1);
-    const code = ch.charCodeAt(0) - 0xac00;
-    if (code < 0 || code > 11171) return false;
-    const jong = code % 28;
-    return jong !== 0;
-  }, []);
-
-  const pickRandomVerb = React.useCallback((words) => {
-    const candidates = (Array.isArray(words) ? words : []).filter((w) => {
-      const ko = String(w.korean || '');
-      const t = String(w.type || '').toLowerCase();
-      return t === 'verb' || /다$/.test(ko);
-    });
-    if (candidates.length === 0) return null;
-    return candidates[Math.floor(Math.random() * candidates.length)];
-  }, []);
-
-  const pickRandomNoun = React.useCallback((words) => {
-    const candidates = (Array.isArray(words) ? words : []).filter((w) => {
-      const ko = String(w.korean || '');
-      const t = String(w.type || '').toLowerCase();
-      const looksVerb = /다$/.test(ko);
-      return t === 'noun' || (!looksVerb && t !== 'verb');
-    });
-    if (candidates.length === 0) return null;
-    return candidates[Math.floor(Math.random() * candidates.length)];
-  }, []);
-
-  const englishPresent3rd = React.useCallback((base) => {
-    const b = String(base || '').trim();
-    const irregular = { have: 'has', do: 'does', go: 'goes', be: 'is' };
-    if (irregular[b]) return irregular[b];
-    if (/[^aeiou]y$/i.test(b)) return b.replace(/y$/i, 'ies');
-    if (/(s|x|z|ch|sh)$/i.test(b)) return b + 'es';
-    return b + 's';
-  }, []);
-
-  const englishPast = React.useCallback((base) => {
-    const b = String(base || '').trim();
-    const irregular = { go: 'went', have: 'had', do: 'did', be: 'was', eat: 'ate', see: 'saw', make: 'made', take: 'took', come: 'came', get: 'got', say: 'said', write: 'wrote', read: 'read' };
-    if (irregular[b]) return irregular[b];
-    if (/e$/i.test(b)) return b + 'd';
-    if (/[^aeiou]y$/i.test(b)) return b.replace(/y$/i, 'ied');
-    return b + 'ed';
-  }, []);
-
-  const buildSubjectAndVerbPair = React.useCallback((words) => {
-    // Pick subject: 50% pronoun, else noun from words (fallback to pronoun)
-    let subjectKo = '';
-    let subjectEn = '';
-    let thirdPersonSingular = false;
-    const usePronoun = Math.random() < 0.5;
-    if (usePronoun) {
-      const p = pickRandomPronoun();
-      subjectKo = p.ko; subjectEn = p.en;
-      thirdPersonSingular = /^(he|she|it)$/i.test(p.en);
-    } else {
-      const n = pickRandomNoun(words);
-      if (n) {
-        const particle = hasFinalConsonant(String(n.korean || '')) ? '은' : '는';
-        subjectKo = `${String(n.korean || '').trim()} ${particle}`.trim();
-        subjectEn = String(n.english || String(n.korean || ''));
-        thirdPersonSingular = true;
-      } else {
-        const pFallback = pickRandomPronoun();
-        subjectKo = pFallback.ko; subjectEn = pFallback.en;
-        thirdPersonSingular = /^(he|she|it)$/i.test(pFallback.en);
-      }
-    }
-
-    // Pick verb
-    const v = pickRandomVerb(words);
-    if (!v) return null;
-    const verbKoBase = String(v.korean || '');
-    const verbEnBase = String(v.english || '').replace(/^to\s+/i, '').split(/[;,]/)[0].trim() || 'do';
-    const tenses = ['present', 'past', 'future'];
-    const tense = tenses[Math.floor(Math.random() * tenses.length)];
-    const koVerb = conjugateVerbSimple(verbKoBase, tense);
-    let enVerb = '';
-    if (tense === 'present') {
-      enVerb = thirdPersonSingular ? englishPresent3rd(verbEnBase) : verbEnBase;
-    } else if (tense === 'past') {
-      enVerb = englishPast(verbEnBase);
-    } else {
-      enVerb = `will ${verbEnBase}`;
-    }
-    const english = `${subjectEn} ${enVerb}`.trim();
-    const korean = `${subjectKo} ${koVerb}`.trim();
-    return { english, korean };
-  }, [pickRandomPronoun, pickRandomNoun, pickRandomVerb, hasFinalConsonant, conjugateVerbSimple, englishPresent3rd, englishPast]);
-
-  // For Level 2 (hands-free), prefer pronouns-only subjects to keep sentences simple and natural
-  const buildPronounAndVerbPair = React.useCallback((words) => {
-    const p = pickRandomPronoun();
-    const v = pickRandomVerb(words);
-    if (!v) return null;
-    const verbKoBase = String(v.korean || '');
-    const verbEnBase = String(v.english || '').replace(/^to\s+/i, '').split(/[;,]/)[0].trim() || 'do';
-    const tenses = ['present', 'past', 'future'];
-    const tense = tenses[Math.floor(Math.random() * tenses.length)];
-    const koVerb = conjugateVerbSimple(verbKoBase, tense);
-    let enVerb = '';
-    if (tense === 'present') {
-      enVerb = /^(he|she|it)$/i.test(p.en) ? englishPresent3rd(verbEnBase) : verbEnBase;
-    } else if (tense === 'past') {
-      enVerb = englishPast(verbEnBase);
-    } else {
-      enVerb = `will ${verbEnBase}`;
-    }
-    const english = `${p.en} ${enVerb}`.trim();
-    const korean = `${p.ko} ${koVerb}`.trim();
-    return { english, korean };
-  }, [pickRandomPronoun, pickRandomVerb, conjugateVerbSimple, englishPresent3rd, englishPast]);
-
-  // Level 2 specialized workflow: pronoun + (오늘/어제/내일) + correctly conjugated verb
-  const buildVerbWithDateSentence = React.useCallback((words) => {
-    const p = pickRandomPronoun();
-    const v = pickRandomVerb(words);
-    if (!v) return null;
-    const verbKoBase = String(v.korean || '');
-    const verbEnBase = String(v.english || '').replace(/^to\s+/i, '').split(/[;,]/)[0].trim() || 'do';
-    // Pick date modifier and map to tense
-    const choices = [
-      { ko: '오늘', en: 'today', tense: 'present' },
-      { ko: '어제', en: 'yesterday', tense: 'past' },
-      { ko: '내일', en: 'tomorrow', tense: 'future' },
-    ];
-    const mod = choices[Math.floor(Math.random() * choices.length)];
-    const koVerb = conjugateVerbSimple(verbKoBase, mod.tense);
-    let enVerb = '';
-    if (mod.tense === 'present') {
-      enVerb = /^(he|she|it)$/i.test(p.en) ? englishPresent3rd(verbEnBase) : verbEnBase;
-    } else if (mod.tense === 'past') {
-      enVerb = englishPast(verbEnBase);
-    } else {
-      enVerb = `will ${verbEnBase}`;
-    }
-    // Compose sentences
-    const korean = `${mod.ko} ${p.ko} ${koVerb}`.trim();
-    const english = `${p.en} ${enVerb} ${mod.en}`.trim();
-    return { english, korean };
-  }, [pickRandomPronoun, pickRandomVerb, conjugateVerbSimple, englishPresent3rd, englishPast]);
-
-  // Level 2 alternative: noun + adjective sentence (present tense)
-  const pickRandomAdjective = React.useCallback((words) => {
-    const candidates = (Array.isArray(words) ? words : []).filter((w) => {
-      const t = String(w.type || '').toLowerCase();
-      const ko = String(w.korean || '');
-      return t === 'adjective' || /다$/.test(ko); // heuristic for descriptive verbs
-    });
-    if (candidates.length === 0) return null;
-    return candidates[Math.floor(Math.random() * candidates.length)];
-  }, []);
-
-  const buildNounAndAdjectiveSentence = React.useCallback((words) => {
-    const n = pickRandomNoun(words);
-    const a = pickRandomAdjective(words);
-    if (!n || !a) return null;
-    const nounKo = String(n.korean || '').trim();
-    const nounEn = String(n.english || String(n.korean || '')).trim();
-    const particle = hasFinalConsonant(nounKo) ? '은' : '는';
-    const adjKoBase = String(a.korean || '').trim();
-    const adjEnBaseRaw = String(a.english || '').trim();
-    // Conjugate adjective to present polite
-    const koAdj = conjugateVerbSimple(adjKoBase, 'present');
-    // Heuristic: strip leading "to be " or "be " to get adjective gloss
-    let adjEn = adjEnBaseRaw.replace(/^to\s+be\s+/i, '').replace(/^be\s+/i, '');
-    // Build sentences
-    const korean = `${nounKo} ${particle} ${koAdj}`.trim();
-    const english = `The ${nounEn} is ${adjEn}`.trim();
-    return { english, korean };
-  }, [pickRandomNoun, pickRandomAdjective, hasFinalConsonant, conjugateVerbSimple]);
-
-  // (Removed: conjugation hints)
-
-  const handleGenerateSet = React.useCallback(async () => {
-    try {
-      setGeneratorLoading(true);
-      setGeneratedWords([]);
-      const resp = await api.chat(generatorPrompt);
-      const data = await resp.json().catch(() => null);
-      const arr = parseJsonArray(data && (data.response || ''));
-      const norm = arr
-        .map((x) => ({ korean: String((x.ko || x.korean || '')).trim(), english: String((x.en || x.english || '')).trim() }))
-        .filter((x) => x.korean && x.english)
-        .slice(0, 20);
-      setGeneratedWords(norm);
-      if (!generatedSetTitle || generatedSetTitle === 'My Word Set') {
-        const ts = new Date();
-        const t = `${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')} ${String(ts.getHours()).padStart(2,'0')}:${String(ts.getMinutes()).padStart(2,'0')}`;
-        setGeneratedSetTitle(`Set ${t}`);
-      }
-    } catch (_) {
-      setGeneratedWords([]);
-    } finally {
-      setGeneratorLoading(false);
-    }
-  }, [generatorPrompt, generatedSetTitle]);
-
-  const saveGeneratedSet = React.useCallback(() => {
-    if (!generatedWords || generatedWords.length === 0) return;
-    const id = Date.now().toString(36);
-    const set = { id, title: generatedSetTitle || 'Untitled', words: generatedWords, createdAt: Date.now() };
-    persistSets([set, ...wordSets]);
-    setShowGenerator(false);
-    setGeneratedWords([]);
-  }, [generatedWords, generatedSetTitle, wordSets, persistSets]);
-
-  const playSet = React.useCallback(async (set) => {
-    if (!set || !Array.isArray(set.words) || set.words.length === 0) return;
-    setIsQuizLooping(true);
-    playingRef.current = true;
-    pausedRef.current = false;
-    quizLoopRef.current = true;
-    try {
-      setCurrentSetWords(set.words.slice(0, 20));
-      setLoopGenerating(true);
-      setLoopProgress(10);
-      const timer = setInterval(() => setLoopProgress((p) => Math.min(90, p + 5)), 300);
-      await generateAndPlayLoop(set.words, 'ko-KR', 1.0, quizDelaySec);
-      clearInterval(timer);
-      setLoopProgress(100);
-    } catch (_) {
-    } finally {
-      setLoopGenerating(false);
-      setLoopProgress(0);
-    }
-  }, [quizDelaySec]);
-
-  // Check if recording is supported
-  const checkRecordingSupport = React.useCallback(() => {
-    const isSecureContext = window.isSecureContext || location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    
-    if (!isSecureContext) {
-      return 'Recording requires HTTPS on Android. Your connection is HTTP. Please access via HTTPS or localhost.';
-    }
-    
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      return 'getUserMedia not available. Try Chrome or Firefox on HTTPS.';
-    }
-    
-    if (!MediaRecorder) {
-      return 'MediaRecorder not supported in this browser. Try Chrome or Firefox.';
-    }
-    
-    return '';
-  }, []);
-
-  // Intercept console errors and warnings for display
-  React.useEffect(() => {
-    const originalError = console.error;
-    const originalWarn = console.warn;
-    
-    const addError = (type, ...args) => {
-      const message = args.map(arg => {
-        if (typeof arg === 'object') {
-          try {
-            return JSON.stringify(arg, null, 2);
-          } catch {
-            return String(arg);
-          }
-        }
-        return String(arg);
-      }).join(' ');
-      
-      const errorEntry = {
-        id: Date.now() + Math.random(),
-        type,
-        message,
-        timestamp: new Date().toLocaleTimeString(),
-      };
-      
-      consoleErrorRef.current = [...consoleErrorRef.current, errorEntry].slice(-50); // Keep last 50
-      setConsoleErrors([...consoleErrorRef.current]);
-    };
-    
-    console.error = (...args) => {
-      originalError.apply(console, args);
-      addError('error', ...args);
-    };
-    
-    console.warn = (...args) => {
-      originalWarn.apply(console, args);
-      addError('warn', ...args);
-    };
-    
-    return () => {
-      console.error = originalError;
-      console.warn = originalWarn;
-    };
-  }, []);
-
-  React.useEffect(() => {
-    const error = checkRecordingSupport();
-    setRecordingError(error);
-    
-    // Initialize MediaSession on mount
-    if ('mediaSession' in navigator) {
-      updateMediaSession('Audio Learning', 'Korean Learning', false);
-    }
-    
-    // IMMEDIATELY unlock audio context on mount if autoplay is requested
-    // This must happen as early as possible, before Brave blocks it
-    const autoplay = searchParams.get('autoplay');
-    if (autoplay) {
-      console.log('[Autoplay] Early unlock: Starting audio context immediately on mount');
-      // Start keep-alive immediately
-      startKeepAlive();
-      // Try to unlock audio context by playing a silent sound
-      (async () => {
-        try {
-          await ensureAudioContextActive();
-          // Try to play a silent test sound to unlock audio (if possible)
-          try {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (AudioContext && window.__AUDIO_CONTEXT_KEEPALIVE__ && window.__AUDIO_CONTEXT_KEEPALIVE__.context) {
-              const ctx = window.__AUDIO_CONTEXT_KEEPALIVE__.context;
-              if (ctx.state === 'suspended') {
-                await ctx.resume().catch(() => {});
-              }
-              // Create a very short silent buffer to "unlock" audio
-              const buffer = ctx.createBuffer(1, 1, 22050);
-              const source = ctx.createBufferSource();
-              source.buffer = buffer;
-              source.connect(ctx.destination);
-              source.start(0);
-              source.stop(0.001);
-            }
-          } catch (silentErr) {
-            // Silent unlock failed, but continue anyway
-            console.log('[Autoplay] Silent unlock attempt:', silentErr.message);
-          }
-        } catch (err) {
-          console.warn('[Autoplay] Early unlock failed:', err);
-        }
-      })();
-    }
-    
-    // Handle visibility changes to maintain wake lock and audio context
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'visible' && (playingRef.current || quizLoopRef.current)) {
-        await requestWakeLock();
-        // Resume audio context if suspended
-        try {
-          if (window.__AUDIO_CONTEXT_KEEPALIVE__ && window.__AUDIO_CONTEXT_KEEPALIVE__.context) {
-            if (window.__AUDIO_CONTEXT_KEEPALIVE__.context.state === 'suspended') {
-              await window.__AUDIO_CONTEXT_KEEPALIVE__.context.resume();
-            }
-          }
-        } catch (_) {}
-      }
-    };
-    
-    // Handle page focus/blur to keep audio active
-    const handlePageFocus = () => {
-      try {
-        if (window.__AUDIO_CONTEXT_KEEPALIVE__ && window.__AUDIO_CONTEXT_KEEPALIVE__.context) {
-          if (window.__AUDIO_CONTEXT_KEEPALIVE__.context.state === 'suspended') {
-            window.__AUDIO_CONTEXT_KEEPALIVE__.context.resume();
-          }
-        }
-      } catch (_) {}
-    };
-    
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handlePageFocus);
-    window.addEventListener('blur', handlePageFocus);
-    
-    // Cleanup on unmount
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handlePageFocus);
-      window.removeEventListener('blur', handlePageFocus);
-      releaseWakeLock();
-      stopKeepAlive();
-    };
-  }, [checkRecordingSupport, searchParams]);
+  // Initialize MediaSession and handle autoplay
+  useMediaSession(playingRef, quizLoopRef);
 
   // Await while paused without tearing down the loop
   const waitWhilePaused = React.useCallback(async () => {
@@ -877,28 +756,13 @@ function AudioLearningPage() {
     })();
   }, [ensureLearningWords]);
 
-  const parseJsonObject = (text) => {
-    const m = text && text.match(/\{[\s\S]*\}/);
-    if (!m) return null;
-    try { const obj = JSON.parse(m[0]); return obj && typeof obj === 'object' ? obj : null; } catch (_) { return null; }
-  };
-
-  const pickRandom = (arr, n) => {
-    const copy = [...arr];
-    const out = [];
-    while (copy.length && out.length < n) {
-      const i = Math.floor(Math.random() * copy.length);
-      out.push(copy.splice(i, 1)[0]);
-    }
-    return out;
-  };
-
-  const parseJsonArraySafe = (text) => {
-    if (!text) return [];
-    const m = String(text).match(/\[[\s\S]*\]/);
-    if (!m) return [];
-    try { const arr = JSON.parse(m[0]); return Array.isArray(arr) ? arr : []; } catch (_) { return []; }
-  };
+  // Sentence generators - using extracted utilities (getWordByWordPairsMemo moved earlier)
+  const getCurriculumSentenceMemo = React.useCallback(async () => 
+    getCurriculumSentence(api), []);
+  const generateLearningSentenceMemo = React.useCallback(async () => 
+    generateLearningSentence(api, ensureLearningWords, pickRandom), [ensureLearningWords]);
+  const generateEnglishWordIndicesMemo = React.useCallback(async (korean, english, blankWords) => 
+    generateEnglishWordIndices(api, korean, english, blankWords), []);
 
   // Generate a coherent 5-turn conversation (independent of learning words)
   // Now using the shared conversationGenerator module
@@ -906,49 +770,9 @@ function AudioLearningPage() {
     return await generateConversationSet(contextKorean, contextEnglish);
   }, []);
 
-  // Fetch one curriculum sentence (EN/KR) with error handling and fallback
-  const getCurriculumSentence = React.useCallback(async () => {
-    try {
-      const res = await api.getRandomCurriculumPhrase(8000, 1); // 8s timeout, 1 retry
-      if (!res.ok) {
-        // If 504 or other server error, log and return null to use fallback
-        if (res.status === 504 || res.status === 502 || res.status === 503) {
-          console.warn(`Curriculum API error: HTTP ${res.status}. Using fallback sentence generation.`);
-          return null;
-        }
-        return null;
-      }
-      const p = await res.json();
-      const english = String(p && (p.english_text || p.english || '') || '').trim();
-      const korean = String(p && (p.korean_text || p.korean || '') || '').trim();
-      if (!english || !korean) return null;
-      return { english, korean };
-    } catch (error) {
-      // Log error but don't break the flow - use fallback
-      console.warn('Failed to fetch curriculum phrase:', error.message || error);
-      return null;
-    }
-  }, []);
 
-  // Get word-by-word explanation pairs using chat (fallback to simple split)
-  const getWordByWordPairs = React.useCallback(async (english, korean) => {
-    try {
-      const prompt = `Return ONLY a JSON array of objects each like {"ko":"…","en":"…"} that maps each token in this Korean sentence to a concise English gloss. Keep array in Korean word order and cover every token.
-Korean: ${korean}
-English: ${english}`;
-      const res = await api.chat(prompt);
-      const data = await res.json().catch(() => null);
-      const arr = parseJsonArraySafe(data && (data.response || ''));
-      const norm = arr.map(x => ({ ko: String((x.ko || x.korean || '')).trim(), en: String((x.en || x.english || '')).trim() }))
-                     .filter(x => x.ko && x.en);
-      if (norm && norm.length) return norm;
-    } catch (_) {}
-    // Fallback: naive split by spaces
-    const koParts = String(korean || '').split(/\s+/).filter(Boolean);
-    const enParts = String(english || '').split(/\s+/).filter(Boolean);
-    const n = Math.min(koParts.length, enParts.length);
-    return new Array(n).fill(0).map((_, i) => ({ ko: koParts[i], en: enParts[i] }));
-  }, []);
+  // Note: getWordByWordPairs is imported from sentenceGenerators.js and used via getWordByWordPairsMemo
+  // The imported version includes validation to ensure ko/en fields are correctly identified
 
   const generateLearningSentence = React.useCallback(async () => {
     const words = await ensureLearningWords();
@@ -976,271 +800,95 @@ English: ${english}`;
 
   // Save current Level 3 conversation set (5 items)
   // IMPORTANT: Save the complete sentence objects including wordPairs so they can be restored exactly
-  const saveConversationSet = React.useCallback((itemsToSaveOverride = null) => {
+  const saveConversationSet = React.useCallback((itemsToSaveOverride = null, audioUrlOverride = null) => {
     try {
       const items = itemsToSaveOverride || (Array.isArray(generatedSentences) ? generatedSentences.slice(0, 5) : []);
       if (!items || items.length === 0) return;
       
       // Ensure we save the complete objects with wordPairs preserved
-      const itemsToSave = items.map(item => ({
+      const itemsToSave = items.map(item => {
+        const wordPairs = Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => {
+          // Only include ko and en fields, explicitly exclude korean and english
+          const ko = String(pair.ko || pair.korean || '').trim();
+          const en = String(pair.en || pair.english || '').trim();
+          return { ko, en };
+        }).filter(p => p.ko && p.en) : [];
+        // Debug: log if wordPairs are missing
+        if (wordPairs.length === 0 && item.korean && item.english) {
+          console.warn('[saveConversationSet] No wordPairs found for item:', { korean: item.korean, english: item.english, hasWordPairs: !!item.wordPairs });
+        }
+        return {
         korean: String(item.korean || ''),
         english: String(item.english || ''),
-        wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
-          ko: String(pair.ko || pair.korean || ''),
-          en: String(pair.en || pair.english || '')
-        })) : [],
+          wordPairs,
         englishWordMapping: item.englishWordMapping || {}
-      }));
+        };
+      });
       
       const id = Date.now().toString(36);
       const ts = new Date();
       const title = `Conversation ${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')} ${String(ts.getHours()).padStart(2,'0')}:${String(ts.getMinutes()).padStart(2,'0')}`;
-      // Include audio URL if available
+      // Include audio URL if available (use override if provided, otherwise use state)
       const entry = { 
         id, 
         title, 
         items: itemsToSave, // Save with wordPairs preserved
-        audioUrl: conversationAudioUrl || null,
+        audioUrl: audioUrlOverride || conversationAudioUrl || null,
         createdAt: Date.now() 
       };
       persistConversations([entry, ...savedConversations]);
       // Automatically set as default conversation
       setDefaultConversation(id);
       // Save to server (shared DB) and refresh list
-      // Note: Server may not preserve wordPairs, but local storage will
+      // Ensure wordPairs are included when saving to server
       (async () => {
         try {
+          // Verify wordPairs are present before sending
+          const hasWordPairs = itemsToSave.some(item => Array.isArray(item.wordPairs) && item.wordPairs.length > 0);
+          console.log('[saveConversationSet] Saving to server:', { 
+            itemCount: itemsToSave.length, 
+            hasWordPairs,
+            sampleItem: itemsToSave[0] ? {
+              korean: itemsToSave[0].korean,
+              english: itemsToSave[0].english,
+              wordPairsCount: itemsToSave[0].wordPairs?.length || 0
+            } : null
+          });
           const serverId = await postServerConversation(title, itemsToSave);
           if (serverId) {
             await fetchServerConversations();
           }
-        } catch (_) {}
+        } catch (err) {
+          console.error('Error saving conversation to server:', err);
+        }
       })();
     } catch (_) {}
   }, [generatedSentences, conversationAudioUrl, savedConversations, persistConversations, postServerConversation, fetchServerConversations, setDefaultConversation]);
 
   const [currentConversationTitle, setCurrentConversationTitle] = React.useState('');
   
-  const playConversationAudio = React.useCallback((shouldLoop = false, audioUrl = null, title = null) => {
-    return new Promise((resolve) => {
-      try {
-        const urlToPlay = audioUrl || conversationAudioUrl;
-        if (!urlToPlay) return resolve();
-        // Stop previous if exists
-        try {
-          const prev = conversationAudioRef.current;
-          if (prev) {
-            if (prev._speedCheckInterval) { try { clearInterval(prev._speedCheckInterval); } catch (_) {} }
-            prev.onended = null;
-            prev.onerror = null;
-            prev.loop = false;
-            prev.pause();
-            prev.src = '';
-            prev.load();
-          }
-        } catch (_) {}
-        const audio = new Audio(urlToPlay);
-        conversationAudioRef.current = audio;
-        audio.setAttribute('playsinline', 'true');
-        // Set loop only if requested (for Level 3)
-        audio.loop = shouldLoop;
-        // Apply master speed and keep it synced
-        try {
-          const currentSpeed = window.__APP_SPEECH_SPEED__ || 1.0;
-          audio.playbackRate = currentSpeed;
-        } catch (_) {}
-        const speedCheckInterval = setInterval(() => {
-          try {
-            const desired = window.__APP_SPEECH_SPEED__ || 1.0;
-            if (audio.playbackRate !== desired) {
-              audio.playbackRate = desired;
-            }
-          } catch (_) {}
-        }, 500);
-        audio._speedCheckInterval = speedCheckInterval;
-        
-        // Get current conversation title for MediaSession
-        // Priority: passed title > playlist current > saved title state > default
-        const currentConv = isPlaylistMode && playlistIndex >= 0 && playlistIndex < playlist.length
-          ? playlist[playlistIndex]
-          : null;
-        const sessionTitle = title || (currentConv ? currentConv.title : null) || currentConversationTitle || 'Conversation Audio';
-        if (title || currentConv) {
-          setCurrentConversationTitle(sessionTitle);
-        }
-        
-        // Set up MediaSession callbacks for Android notification controls
-        // Update MediaSession metadata with conversation title for Android audio controls
-        updateMediaSession(sessionTitle, 'Korean Learning', true, {
-          play: () => {
-            try {
-              if (audio && audio.paused) {
-                audio.play().catch(() => {});
-                pausedRef.current = false;
-                setIsPaused(false);
-                updateMediaSession(sessionTitle, 'Korean Learning', true, {
-                  play: () => {},
-                  pause: () => {},
-                  stop: () => {},
-                  nexttrack: isPlaylistMode && playlist.length > 1 ? (() => {
-                    console.log('[MediaSession] Next track triggered (play)');
-                    if (playNextConversationRef.current) {
-                      playNextConversationRef.current();
-                    }
-                  }) : undefined,
-                  previoustrack: isPlaylistMode && playlist.length > 1 ? (() => {
-                    console.log('[MediaSession] Previous track triggered (play)');
-                    if (playPreviousConversationRef.current) {
-                      playPreviousConversationRef.current();
-                    }
-                  }) : undefined,
-                });
-              }
-            } catch (_) {}
-          },
-          pause: () => {
-            try {
-              if (audio && !audio.paused) {
-                audio.pause();
-                pausedRef.current = true;
-                setIsPaused(true);
-                updateMediaSession(sessionTitle, 'Korean Learning', false, {
-                  play: () => {},
-                  pause: () => {},
-                  stop: () => {},
-                  nexttrack: isPlaylistMode && playlist.length > 1 ? (() => {
-                    console.log('[MediaSession] Next track triggered (play)');
-                    if (playNextConversationRef.current) {
-                      playNextConversationRef.current();
-                    }
-                  }) : undefined,
-                  previoustrack: isPlaylistMode && playlist.length > 1 ? (() => {
-                    console.log('[MediaSession] Previous track triggered (play)');
-                    if (playPreviousConversationRef.current) {
-                      playPreviousConversationRef.current();
-                    }
-                  }) : undefined,
-                });
-              }
-            } catch (_) {}
-          },
-          stop: () => {
-            try {
-              if (audio) {
-                audio.pause();
-                audio.currentTime = 0;
-                pausedRef.current = false;
-                setIsPaused(false);
-                playingRef.current = false;
-                quizLoopRef.current = false;
-                updateMediaSession('Audio Learning', '', false);
-              }
-            } catch (_) {}
-          },
-          nexttrack: isPlaylistMode && playlist.length > 1 ? (() => {
-            console.log('[MediaSession] Next track triggered');
-            if (playNextConversationRef.current) {
-              playNextConversationRef.current();
-            }
-          }) : undefined,
-          previoustrack: isPlaylistMode && playlist.length > 1 ? (() => {
-            console.log('[MediaSession] Previous track triggered');
-            if (playPreviousConversationRef.current) {
-              playPreviousConversationRef.current();
-            }
-          }) : undefined,
-        });
-        const cleanup = () => {
-          try {
-            if (audio._speedCheckInterval) { try { clearInterval(audio._speedCheckInterval); } catch (_) {} }
-            audio.onended = null;
-            audio.onerror = null;
-            audio.loop = false;
-            audio.pause();
-            audio.src = '';
-            audio.load();
-          } catch (_) {}
-          if (conversationAudioRef.current === audio) {
-            conversationAudioRef.current = null;
-          }
-          resolve();
-        };
-        if (shouldLoop) {
-          // For looping audio, onended won't fire, so we only cleanup on error or manual stop
-          audio.onerror = cleanup;
-          audio.play().catch((err) => {
-            console.warn('Failed to play audio (autoplay may be blocked):', err);
-            // Check if this is an autoplay blocking error
-            if (err.name === 'NotAllowedError' || err.name === 'NotAllowedError' || err.message?.includes('play') || err.message?.includes('user gesture')) {
-              console.warn('[Autoplay] Autoplay blocked by browser - user gesture required');
-              // Set autoplay blocked state if we're in autoplay mode
-              if (searchParams.get('autoplay')) {
-                setAutoplayBlocked(true);
-                autoStartedRef.current = false;
-              }
-              cleanup();
-              return;
-            }
-            // Try to resume audio context and retry once
-            (async () => {
-              try {
-                await ensureAudioContextActive();
-                if (window.__AUDIO_CONTEXT_KEEPALIVE__ && window.__AUDIO_CONTEXT_KEEPALIVE__.context) {
-                  const ctx = window.__AUDIO_CONTEXT_KEEPALIVE__.context;
-                  if (ctx.state === 'suspended') {
-                    await ctx.resume();
-                  }
-                }
-                // Retry play after a short delay
-                await new Promise(r => setTimeout(r, 100));
-                await audio.play().catch(() => cleanup());
-              } catch (retryErr) {
-                console.error('Retry play failed:', retryErr);
-                cleanup();
-              }
-            })();
-          });
-          // Don't resolve immediately - let it play in loop
-        } else {
-          // For non-looping, resolve when ended
-          audio.onended = cleanup;
-          audio.onerror = cleanup;
-          audio.play().catch((err) => {
-            console.warn('Failed to play audio (autoplay may be blocked):', err);
-            // Check if this is an autoplay blocking error
-            if (err.name === 'NotAllowedError' || err.name === 'NotAllowedError' || err.message?.includes('play') || err.message?.includes('user gesture')) {
-              console.warn('[Autoplay] Autoplay blocked by browser - user gesture required');
-              // Set autoplay blocked state if we're in autoplay mode
-              if (searchParams.get('autoplay')) {
-                setAutoplayBlocked(true);
-                autoStartedRef.current = false;
-              }
-              cleanup();
-              return;
-            }
-            // Try to resume audio context and retry once
-            (async () => {
-              try {
-                await ensureAudioContextActive();
-                if (window.__AUDIO_CONTEXT_KEEPALIVE__ && window.__AUDIO_CONTEXT_KEEPALIVE__.context) {
-                  const ctx = window.__AUDIO_CONTEXT_KEEPALIVE__.context;
-                  if (ctx.state === 'suspended') {
-                    await ctx.resume();
-                  }
-                }
-                // Retry play after a short delay
-                await new Promise(r => setTimeout(r, 100));
-                await audio.play().catch(() => cleanup());
-              } catch (retryErr) {
-                console.error('Retry play failed:', retryErr);
-                cleanup();
-              }
-            })();
-          });
-        }
-      } catch (_) { resolve(); }
-    });
-  }, [conversationAudioUrl, searchParams, isPlaylistMode, playlist, playlistIndex, currentConversationTitle]);
+  // Create conversation audio playback function using extracted utility
+  const playConversationAudio = React.useCallback(
+    createPlayConversationAudio({
+      conversationAudioUrl,
+      conversationAudioRef,
+      searchParams,
+      isPlaylistMode,
+      playlist,
+      playlistIndex,
+      currentConversationTitle,
+      setCurrentConversationTitle,
+      setAutoplayBlocked,
+      autoStartedRef,
+      playNextConversationRef,
+      playPreviousConversationRef,
+      pausedRef,
+      setIsPaused,
+      playingRef,
+      quizLoopRef,
+    }),
+    [conversationAudioUrl, searchParams, isPlaylistMode, playlist, playlistIndex, currentConversationTitle]
+  );
   
   // Update ref after playConversationAudio is defined
   React.useEffect(() => {
@@ -1314,8 +962,8 @@ Return ONLY the JSON object, no other text.`;
         const batchWithData = await Promise.all(batch.map(async (sent) => {
           try {
             const [mapping, wordPairs] = await Promise.all([
-              generateEnglishWordIndices(sent.korean, sent.english),
-              getWordByWordPairs(sent.english, sent.korean)
+              generateEnglishWordIndicesMemo(sent.korean, sent.english),
+              getWordByWordPairsMemo(sent.english, sent.korean)
             ]);
             return {
               ...sent,
@@ -1325,8 +973,8 @@ Return ONLY the JSON object, no other text.`;
           } catch (_) {
             // Fallback: try to get word pairs separately if combined fails
             try {
-              const mapping = await generateEnglishWordIndices(sent.korean, sent.english);
-              const wordPairs = await getWordByWordPairs(sent.english, sent.korean);
+              const mapping = await generateEnglishWordIndicesMemo(sent.korean, sent.english);
+              const wordPairs = await getWordByWordPairsMemo(sent.english, sent.korean);
               return {
                 ...sent,
                 englishWordMapping: mapping,
@@ -1340,195 +988,121 @@ Return ONLY the JSON object, no other text.`;
         setGeneratedSentences(batchWithData);
         setCurrentConversationId(null); // New conversation, not saved yet
         setConversationAudioUrl('');
-        // Automatically save the new conversation
-        saveConversationSet(batchWithData);
+        
+        // Automatically generate Level 3 audio FIRST if quiz difficulty is Level 3
+        // This ensures we save the conversation WITH the audioUrl, preventing regular conversation audio generation
+        const isLevel3 = (Number(quizDifficulty) || 1) === 3;
+        let generatedAudioUrl = null;
+        
+        if (isLevel3 && batchWithData.length > 0) {
+          // Check if word pairs exist
+          const hasWordPairs = batchWithData.every(item => Array.isArray(item.wordPairs) && item.wordPairs.length > 0);
+          
+          if (hasWordPairs) {
+            // Show loading state
+            setIsGeneratingLevel3Audio(true);
+            setLevel3AudioProgress(0);
+            
+            try {
+              // Format sentences with word pairs for Level 3 audio generation
+              const sentencesWithPairs = batchWithData.map(item => ({
+                english: String(item.english || ''),
+                korean: String(item.korean || ''),
+                wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => {
+                  // Only include ko and en fields
+                  const ko = String(pair.ko || pair.korean || '').trim();
+                  const en = String(pair.en || pair.english || '').trim();
+                  return { ko, en };
+                }).filter(p => p.ko && p.en) : []
+              }));
+              
+              setLevel3AudioProgress(50);
+              
+              // Generate Level 3 audio
+              generatedAudioUrl = await generateLevel3Audio(
+                sentencesWithPairs,
+                Math.max(0, Number(quizDelaySec) || 0.5)
+              );
+              
+              setLevel3AudioProgress(100);
+              
+              if (generatedAudioUrl) {
+                setConversationAudioUrl(generatedAudioUrl);
+                console.log('[handleGenerateNewConversation] Generated Level 3 audio:', generatedAudioUrl);
+              } else {
+                console.warn('[handleGenerateNewConversation] Failed to generate Level 3 audio');
+              }
+            } catch (err) {
+              console.error('[handleGenerateNewConversation] Error generating Level 3 audio:', err);
+            } finally {
+              setIsGeneratingLevel3Audio(false);
+              setLevel3AudioProgress(0);
+            }
+          } else {
+            console.warn('[handleGenerateNewConversation] Word pairs missing, skipping Level 3 audio generation');
+          }
+        }
+        
+        // Save the conversation AFTER generating Level 3 audio (if applicable)
+        // Pass the audioUrl directly to saveConversationSet to ensure it's saved correctly
+        // This prevents the auto-load useEffect from generating regular conversation audio
+        saveConversationSet(batchWithData, generatedAudioUrl || null);
       }
     } catch (_) {}
-  }, [conversationContextKorean, conversationContextEnglish, generateConversationSetLocal, generateEnglishWordIndices, getWordByWordPairs, saveConversationSet]);
+  }, [conversationContextKorean, conversationContextEnglish, generateConversationSetLocal, generateEnglishWordIndices, getWordByWordPairs, saveConversationSet, quizDifficulty, quizDelaySec, setIsGeneratingLevel3Audio, setLevel3AudioProgress, generateLevel3Audio]);
 
   // Play currently loaded conversation using single MP3 (do not generate a new conversation)
-  const handlePlayCurrentConversation = React.useCallback(async () => {
-    setIsQuizLooping(true);
-    playingRef.current = true;
-    pausedRef.current = false;
-    setIsPaused(false);
-    quizLoopRef.current = true;
-    await requestWakeLock();
-    startKeepAlive();
-    try {
-      // Use sentences in stored order for audio
-      const items = Array.isArray(generatedSentences) ? generatedSentences : [];
-      if (!items || items.length === 0) return;
-      
-      // For Level 3, generate word pairs and create Level 3 audio
-      const level = Number(quizDifficulty) || 1;
-      if (level === 3) {
-        // Show loading state
-        setIsGeneratingLevel3Audio(true);
-        setLevel3AudioProgress(0);
-        
-        // Check if items already have wordPairs saved (from loaded conversation)
-        // If they do, use them; otherwise generate new ones
-        const hasWordPairs = items.every(item => Array.isArray(item.wordPairs) && item.wordPairs.length > 0);
-        
-        let sentencesWithPairs;
-        if (hasWordPairs) {
-          // Use saved word pairs - format them for prepareLevel3AudioData
-          setLevel3AudioProgress(10);
-          sentencesWithPairs = items.map(item => ({
-            english: String(item.english || ''),
-            korean: String(item.korean || ''),
-            wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
-              ko: String(pair.ko || pair.korean || ''),
-              en: String(pair.en || pair.english || '')
-            })) : []
-          }));
-          setLevel3AudioProgress(50);
-        } else {
-          // Generate word pairs for all sentences using audio pattern utility
-          setLevel3AudioProgress(10);
-          sentencesWithPairs = await prepareLevel3AudioData(
-            items,
-            getWordByWordPairs,
-            (progress) => setLevel3AudioProgress(progress)
-          );
-        }
-        
-        // Generate Level 3 audio using audio pattern utility
-        setLevel3AudioProgress(60);
-        const audioUrl = await generateLevel3Audio(
-          sentencesWithPairs,
-          Math.max(0, Number(quizDelaySec) || 0.5)
-        );
-        setLevel3AudioProgress(100);
-        
-        if (audioUrl) {
-          setConversationAudioUrl(audioUrl);
-          setIsGeneratingLevel3Audio(false);
-          setLevel3AudioProgress(0);
-          // Find conversation title from saved conversations or use default
-          const currentConv = savedConversations.find(c => c.audioUrl === audioUrl) || 
-                             (isPlaylistMode && playlistIndex >= 0 && playlistIndex < playlist.length ? playlist[playlistIndex] : null);
-          const convTitle = currentConv ? currentConv.title : (currentConversationTitle || 'New Conversation');
-          setCurrentConversationTitle(convTitle);
-          // Play the audio immediately (it will loop automatically)
-          await playConversationAudio(true, audioUrl, convTitle); // true = loop, pass URL directly
-          // Keep the loop running while playing (audio loops automatically)
-          while (playingRef.current && quizLoopRef.current) {
-            await waitWhilePaused();
-            if (!playingRef.current || !quizLoopRef.current) break;
-            await new Promise(r => setTimeout(r, 500));
-          }
-        } else {
-          setIsGeneratingLevel3Audio(false);
-          setLevel3AudioProgress(0);
-          setError('Failed to generate audio: No audio URL returned');
-        }
-      } else {
-        // For other levels, use conversation audio (no loop)
-        let audioUrl = conversationAudioUrl;
-        if (!audioUrl) {
-          audioUrl = await generateConversationAudio(items);
-        }
-        if (audioUrl) {
-          // Find conversation title from saved conversations or use default
-          const currentConv = savedConversations.find(c => c.audioUrl === audioUrl) || 
-                             (isPlaylistMode && playlistIndex >= 0 && playlistIndex < playlist.length ? playlist[playlistIndex] : null);
-          const convTitle = currentConv ? currentConv.title : (currentConversationTitle || 'New Conversation');
-          setCurrentConversationTitle(convTitle);
-          // Play immediately with the generated URL (don't wait for state update)
-          await playConversationAudio(false, audioUrl, convTitle); // false = no loop
-          await new Promise(r => setTimeout(r, 200));
-        } else {
-          setError('Failed to generate conversation audio');
-        }
-      }
-    } finally {
-      setIsQuizLooping(false);
-      quizLoopRef.current = false;
-      playingRef.current = false;
-      pausedRef.current = false;
-      updateMediaSession('Audio Learning', '', false);
-      await releaseWakeLock();
-      if (!quizLoopRef.current) {
-        stopKeepAlive();
-      }
-    }
-  }, [generatedSentences, conversationAudioUrl, generateConversationAudio, playConversationAudio, quizDifficulty, quizDelaySec, getWordByWordPairs, waitWhilePaused, generateConversationSetLocal, savedConversations, isPlaylistMode, playlist, playlistIndex, currentConversationTitle]);
+  const handlePlayCurrentConversation = React.useCallback(
+    createHandlePlayCurrentConversation({
+      setIsQuizLooping,
+      playingRef,
+      pausedRef,
+      setIsPaused,
+      quizLoopRef,
+      requestWakeLock,
+      startKeepAlive,
+      releaseWakeLock,
+      stopKeepAlive,
+      updateMediaSession,
+      generatedSentences,
+      quizDifficulty,
+      setIsGeneratingLevel3Audio,
+      setLevel3AudioProgress,
+      getWordByWordPairsMemo,
+      generateLevel3Audio,
+      quizDelaySec,
+      setConversationAudioUrl,
+      savedConversations,
+      isPlaylistMode,
+      playlist,
+      playlistIndex,
+      currentConversationTitle,
+      setCurrentConversationTitle,
+      playConversationAudio,
+      waitWhilePaused,
+      conversationAudioUrl,
+      generateLevel3AudioForItems,
+    }),
+    [generatedSentences, conversationAudioUrl, generateLevel3AudioForItems, playConversationAudio, quizDifficulty, quizDelaySec, getWordByWordPairsMemo, waitWhilePaused, savedConversations, isPlaylistMode, playlist, playlistIndex, currentConversationTitle]
+  );
 
-  const generateQuizSentence = React.useCallback(async (difficulty) => {
-    if (difficulty === 1) return null; // single word handled separately
-    if (difficulty === 2) {
-      // Level 2: Use shared verb practice algorithm
-      const result = await generateVerbPracticeSentence();
-      if (result && result.korean && result.english) {
-        return { korean: result.korean, english: result.english };
-      }
-      // Fallback to prior builders if shared function fails
-      const all = await ensureLearningWords();
-      if (!all || all.length === 0) return null;
-      const pool = (Array.isArray(level2Words) && level2Words.length > 0) ? level2Words : all;
-      const hasVerbIn = (arr) => Array.isArray(arr) && arr.some(w => {
-        const ko = String(w.korean || '');
-        const t = String(w.type || '').toLowerCase();
-        return t === 'verb' || /다$/.test(ko);
-      });
-      const words = hasVerbIn(pool) ? pool : all;
-      const primary = buildVerbWithDateSentence(words);
-      if (primary && primary.english && primary.korean) {
-        return primary;
-      }
-      const tryBuild = async () => {
-        const tryOrder = Math.random() < 0.5 ? ['pv', 'na'] : ['na', 'pv'];
-        for (const kind of tryOrder) {
-          for (let attempt = 0; attempt < 3; attempt++) {
-            const pair = kind === 'pv' ? buildPronounAndVerbPair(words) : buildNounAndAdjectiveSentence(words);
-            if (pair && pair.english && pair.korean) {
-              const en = String(pair.english).trim();
-              const ko = String(pair.korean).trim();
-              if (en.includes(' ') && ko.includes(' ')) return pair;
-            }
-          }
-        }
-        return null;
-      };
-      const built = await tryBuild();
-      return built || { english: 'I do', korean: '나는 해요' };
-    }
-    // Level 3: random conversational sentence (not tied to learning words)
-    try {
-      const prompt = `Return ONLY JSON: {"korean":"...","english":"..."}.
-Create ONE natural everyday conversational Korean sentence in polite style (ending with 요), 7–12 words.
-Avoid rare terms and proper nouns; keep to common daily-life topics.
-Provide an accurate English translation.`;
-      const res = await api.chat(prompt);
-      const data = await res.json();
-      const obj = parseJsonObject(data && data.response || '');
-      if (obj && obj.korean && obj.english) {
-        return { korean: String(obj.korean), english: String(obj.english) };
-      }
-    } catch (_) {}
-    // Fallback: random conversational seeds (independent of learning words)
-    const seeds = [
-      { korean: '오늘 저녁에 같이 밥 먹을까요?', english: "Shall we have dinner together this evening?" },
-      { korean: '주말에 시간 있으시면 커피 마셔요.', english: "If you have time on the weekend, let's have coffee." },
-      { korean: '이거 어떻게 사용하는지 알려줄 수 있어요?', english: "Can you show me how to use this?" },
-      { korean: '어제 본 영화가 정말 재미있었어요.', english: "The movie I saw yesterday was really fun." },
-      { korean: '잠깐만 기다려 주세요. 금방 올게요.', english: "Please wait a moment. I'll be right back." },
-      { korean: '사진을 보내 주시면 바로 확인할게요.', english: "If you send the photo, I'll check it right away." },
-      { korean: '지하철이 너무 복잡해서 조금 늦었어요.', english: "The subway was too crowded, so I'm a bit late." },
-      { korean: '내일 아침 일찍 출발하는 게 어때요?', english: "How about leaving early tomorrow morning?" },
-      { korean: '도와주셔서 정말 감사합니다.', english: "Thank you so much for your help." },
-      { korean: '이 근처에 맛있는 식당이 있을까요?', english: "Is there a good restaurant around here?" },
-    ];
-    const s = seeds[Math.floor(Math.random() * seeds.length)];
-    return { korean: s.korean, english: s.english };
-  }, [parseJsonObject]);
+  const generateQuizSentenceMemo = React.useCallback(async (difficulty) => 
+    generateQuizSentence(
+      difficulty,
+      api,
+      ensureLearningWords,
+      level2Words,
+      buildVerbWithDateSentenceMemo,
+      buildPronounAndVerbPairMemo,
+      buildNounAndAdjectiveSentenceMemo
+    ),
+    [api, ensureLearningWords, level2Words, buildVerbWithDateSentenceMemo, buildPronounAndVerbPairMemo, buildNounAndAdjectiveSentenceMemo]
+  );
 
   const handlePlayLearningMode = React.useCallback(async () => {
     await playLearningMode({
       ensureLearningWords,
-      generateLearningSentence,
+      generateLearningSentence: generateLearningSentenceMemo,
       waitWhilePaused,
       speak,
       updateMediaSession,
@@ -1541,7 +1115,7 @@ Provide an accurate English translation.`;
       playingRef,
       quizLoopRef
     });
-  }, [ensureLearningWords, generateLearningSentence, waitWhilePaused, speak, updateMediaSession, requestWakeLock, releaseWakeLock, startKeepAlive, stopKeepAlive]);
+  }, [ensureLearningWords, generateLearningSentenceMemo, waitWhilePaused, speak, updateMediaSession, requestWakeLock, releaseWakeLock, startKeepAlive, stopKeepAlive]);
 
   const stopAll = React.useCallback(async () => {
     playingRef.current = false;
@@ -1577,604 +1151,61 @@ Provide an accurate English translation.`;
     stopKeepAlive();
   }, []);
 
-  // Recording helpers
-  const startMicRecording = React.useCallback(async () => {
-    try {
-      if (isMicRecording) return;
-      
-      // Request audio permissions
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        } 
-      });
-      mediaStreamRef.current = stream;
-      
-      let mr;
-      let mimeType = '';
-      
-      // Better Android codec detection
-      const codecs = [
-        'audio/webm;codecs=opus',
-        'audio/webm;codecs=pcm',
-        'audio/webm',
-        'audio/ogg;codecs=opus',
-        'audio/mp4',
-        'audio/mpeg',
-        ''
-      ];
-      
-      for (const codec of codecs) {
-        try {
-          if (!codec || MediaRecorder.isTypeSupported(codec)) {
-            mimeType = codec;
-            mr = codec ? new MediaRecorder(stream, { mimeType: codec }) : new MediaRecorder(stream);
-            break;
-          }
-        } catch (e) {
-          continue;
-        }
-      }
-      
-      if (!mr) {
-        // Fallback: try without specifying mimeType
-        try {
-          mr = new MediaRecorder(stream);
-        } catch (err) {
-          console.error('MediaRecorder not supported:', err);
-          setIsMicRecording(false);
-          stream.getTracks().forEach(t => t.stop());
-          return;
-        }
-      }
-      
-      recordedChunksRef.current = [];
-      const recordingPromise = new Promise((resolve) => {
-        mr.onerror = (e) => {
-          console.error('MediaRecorder error:', e);
-          resolve(null);
-        };
-        mr.ondataavailable = (e) => { 
-          if (e && e.data && e.data.size > 0) {
-            recordedChunksRef.current.push(e.data);
-          }
-        };
-        mr.onstop = () => {
-          try {
-            const finalMimeType = mimeType || 'audio/webm';
-            const blob = new Blob(recordedChunksRef.current, { type: finalMimeType });
-            if (blob.size === 0) {
-              console.warn('Empty recording blob');
-              resolve(null);
-              return;
-            }
-            const url = URL.createObjectURL(blob);
-            setRecordedUrl((prev) => { if (prev) { try { URL.revokeObjectURL(prev); } catch (_) {} } return url; });
-            resolve(url);
-          } catch (err) {
-            console.error('Error creating blob:', err);
-            resolve(null);
-          }
-        };
-      });
-      recorderRef.current = mr;
-      recorderRef.current._recordingPromise = recordingPromise;
-      
-      // Android often needs timeslice for continuous data
-      const timeslice = 1000;
-      mr.start(timeslice);
-      setIsMicRecording(true);
-      setRecordingError(''); // Clear any previous errors
-    } catch (err) {
-      console.error('Failed to start recording:', err);
-      setIsMicRecording(false);
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach(t => t.stop());
-        mediaStreamRef.current = null;
-      }
-      let errorMsg = 'Recording failed. ';
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        errorMsg += 'Microphone permission denied. Please allow access.';
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        errorMsg += 'No microphone found.';
-      } else if (err.name === 'NotSupportedError' || err.name === 'TypeError') {
-        errorMsg += 'MediaRecorder not supported. Try using Chrome/Firefox on HTTPS.';
-      } else {
-        errorMsg += err.message || String(err);
-      }
-      setRecordingError(errorMsg);
-    }
-  }, [isMicRecording]);
 
-  const stopMicRecording = React.useCallback(async () => {
-    let url = null;
-    try {
-      const r = recorderRef.current;
-      if (r && r.state !== 'inactive' && r.state !== 'stopped') {
-        try {
-          r.stop();
-        } catch (err) {
-          console.warn('Error stopping recorder:', err);
-        }
-        if (r._recordingPromise) {
-          // Android may need more time to finalize
-          try {
-            url = await Promise.race([
-              r._recordingPromise,
-              new Promise((resolve) => setTimeout(() => resolve(null), 3000))
-            ]);
-          } catch (err) {
-            console.error('Error waiting for recording promise:', err);
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Error in stopMicRecording:', err);
-    }
-    setIsMicRecording(false);
-    try { 
-      const ms = mediaStreamRef.current; 
-      if (ms) { 
-        ms.getTracks().forEach(t => {
-          try { t.stop(); } catch (_) {}
-        }); 
-        mediaStreamRef.current = null; 
-      } 
-    } catch (_) {}
-    // Android may need more time to finalize blob
-    await new Promise(r => setTimeout(r, 300));
-    return url;
-  }, []);
-
-  const playRecorded = React.useCallback((url) => {
-    return new Promise((resolve) => {
-      try {
-        const audioUrl = url || recordedUrl;
-        if (!audioUrl) return resolve();
-        
-        try { console.log('[RecordedAudio] create', { url: audioUrl }); } catch (_) {}
-        const audio = new Audio(audioUrl);
-        let resolved = false;
-        
-        const cleanup = () => {
-          if (resolved) return;
-          resolved = true;
-          try {
-            audio.removeEventListener('ended', onEnded);
-            audio.removeEventListener('error', onError);
-            audio.removeEventListener('canplaythrough', onCanPlay);
-            audio.pause();
-            audio.src = '';
-            audio.load();
-          } catch (_) {}
-          resolve();
-        };
-        
-        const onError = (e) => {
-          console.error('Audio playback error:', e);
-          cleanup();
-        };
-        
-        const onEnded = () => {
-          try { console.log('[RecordedAudio] ended'); } catch (_) {}
-          cleanup();
-        };
-        
-        const onCanPlay = () => {
-          try { console.log('[RecordedAudio] canplaythrough'); } catch (_) {}
-          audio.play().then(() => {
-            // Wait for ended event
-            try { console.log('[RecordedAudio] playing'); } catch (_) {}
-          }).catch((err) => {
-            console.error('Audio play failed:', err);
-            cleanup();
-          });
-        };
-        
-        audio.addEventListener('error', onError);
-        audio.addEventListener('ended', onEnded);
-        audio.addEventListener('canplaythrough', onCanPlay);
-        
-        // Android may need explicit load
-        audio.load();
-        
-        // Fallback timeout
-        setTimeout(() => {
-          if (!resolved) {
-            console.warn('Audio playback timeout');
-            cleanup();
-          }
-        }, 10000);
-      } catch (err) {
-        console.error('Audio creation error:', err);
-        resolve();
-      }
-    });
-  }, [recordedUrl]);
-
-  // Speech recognition (Web Speech API)
-  const startSpeechRecognition = React.useCallback(() => {
-    try {
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SR) return false;
-      const rec = new SR();
-      recognitionRef.current = rec;
-      rec.lang = 'ko-KR';
-      rec.interimResults = false;
-      rec.maxAlternatives = 1;
-      recognizedRef.current = '';
-      setRecognizedText('');
-      rec.onresult = (e) => {
-        const t = (e && e.results && e.results[0] && e.results[0][0] && e.results[0][0].transcript) || '';
-        recognizedRef.current = String(t);
-        setRecognizedText(String(t));
-      };
-      rec.onerror = () => {};
-      rec.onend = () => {};
-      rec.start();
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }, []);
-
-  const stopSpeechRecognition = React.useCallback(() => {
-    try { const r = recognitionRef.current; if (r) { try { r.stop(); } catch (_) {}; try { r.abort && r.abort(); } catch (_) {} } } catch (_) {}
-  }, []);
-
-  const handleStartQuizLoop = React.useCallback(async () => {
-    setIsQuizLooping(true);
-    playingRef.current = true;
-    pausedRef.current = false;
-    setIsPaused(false);
-    quizLoopRef.current = true;
-    // Request wake lock for background playback
-    await requestWakeLock();
-    // Start keep-alive to prevent audio suspension
-    startKeepAlive();
-    
-    // Set up MediaSession callbacks for Android notification controls
-    const level = Number(quizDifficulty) || 1;
-    updateMediaSession('Audio Learning', 'Korean Learning', true, {
-      play: () => {
-        pausedRef.current = false;
-        setIsPaused(false);
-        // Resume audio based on mode
-        if (quizMode === 'hands-free' && level === 3 && conversationAudioRef.current) {
-          try {
-            conversationAudioRef.current.play().catch(() => {});
-          } catch (_) {}
-        } else {
-          resumeLoop();
-        }
-        updateMediaSession('Audio Learning', 'Korean Learning', true);
-      },
-      pause: () => {
-        pausedRef.current = true;
-        setIsPaused(true);
-        // Pause audio based on mode
-        if (quizMode === 'hands-free' && level === 3 && conversationAudioRef.current) {
-          try {
-            conversationAudioRef.current.pause();
-          } catch (_) {}
-        } else {
-          pauseLoop();
-        }
-        updateMediaSession('Audio Learning', 'Korean Learning', false);
-      },
-      stop: () => {
-        pausedRef.current = false;
-        playingRef.current = false;
-        quizLoopRef.current = false;
-        setIsQuizLooping(false);
-        // Stop audio based on mode
-        if (quizMode === 'hands-free' && level === 3 && conversationAudioRef.current) {
-          try {
-            conversationAudioRef.current.pause();
-            conversationAudioRef.current.currentTime = 0;
-          } catch (_) {}
-        } else {
-          stopLoop();
-        }
-        try { const s = window.speechSynthesis; if (s) s.cancel(); } catch (_) {}
-        updateMediaSession('Audio Learning', '', false);
-      }
-    });
-    
-    try {
-      const words = await ensureLearningWords();
-      if (!words || words.length === 0) return;
-      
-      if (quizMode === 'hands-free') {
-        if (level === 1) {
-          // Hands-free Level 1: chunked words (20 per set) by date order, choose set or random set
-          const totalSets = Math.max(1, Math.ceil(words.length / 20));
-          const chosenIndex = Math.min(Math.max(1, setIndex), totalSets);
-          const start = (chosenIndex - 1) * 20;
-          const selectedWords = words.slice(start, Math.min(start + 20, words.length));
-          const transformed = selectedWords.map(applyPronounAndTenseIfVerb);
-          setCurrentSetWords(transformed);
-          try {
-            // Show progress while batch TTS is generated
-            setLoopGenerating(true);
-            setLoopProgress(10);
-            const timer = setInterval(() => setLoopProgress((p) => Math.min(90, p + 5)), 300);
-            await generateAndPlayLoop(transformed, 'ko-KR', 1.0, quizDelaySec);
-            clearInterval(timer);
-            setLoopProgress(100);
-            // Keep playing until stopped (respect pause)
-            while (playingRef.current && quizLoopRef.current) {
-              await waitWhilePaused();
-              await new Promise(r => setTimeout(r, 300));
-            }
-          } catch (err) {
-            console.error('Failed to generate loop:', err);
-          } finally {
-            setLoopGenerating(false);
-            setLoopProgress(0);
-          }
-        } else {
-        // Hands-free Level 2/3: sentences (no recording)
-        setCurrentSetWords([]);
-        setGeneratedSentences([]);
-        if (level === 2) {
-          // Generate exactly 5 sentences once, then loop them
-          const batch = [];
-          for (let i = 0; i < 5; i++) {
-            if (!playingRef.current || !quizLoopRef.current) break;
-            const s = await generateQuizSentence(2);
-            if (s && s.english && s.korean) batch.push({ english: String(s.english), korean: String(s.korean) });
-          }
-          if (batch.length === 0) {
-            // Fallback: generate continuously if batch failed
-            while (playingRef.current && quizLoopRef.current) {
-              await waitWhilePaused(); if (!playingRef.current) break;
-              const sent = await generateQuizSentence(2);
-              if (!sent) break;
-              setGeneratedSentences((prev) => [{ english: String(sent.english || ''), korean: String(sent.korean || '') }, ...prev].slice(0, 10));
-              updateMediaSession(sent.english, 'English', true);
-              await waitWhilePaused(); if (!playingRef.current) break;
-              await speak(sent.english, 'en-US', 1.0);
-              if (!playingRef.current || !quizLoopRef.current) break;
-              await waitWhilePaused(); if (!playingRef.current) break;
-              updateMediaSession(sent.korean, 'Korean', true);
-              await speak(sent.korean, 'ko-KR', 1.0);
-              await new Promise(r => setTimeout(r, 300));
-            }
-          } else {
-            // Show the batch in UI
-            setGeneratedSentences(batch);
-            let idx = 0;
-            while (playingRef.current && quizLoopRef.current) {
-              await waitWhilePaused(); if (!playingRef.current) break;
-              const sent = batch[idx % batch.length];
-              idx++;
-              updateMediaSession(sent.english, 'English', true);
-              await waitWhilePaused(); if (!playingRef.current) break;
-              await speak(sent.english, 'en-US', 1.0);
-              if (!playingRef.current || !quizLoopRef.current) break;
-              await waitWhilePaused(); if (!playingRef.current) break;
-              updateMediaSession(sent.korean, 'Korean', true);
-              await speak(sent.korean, 'ko-KR', 1.0);
-              await new Promise(r => setTimeout(r, 300));
-            }
-          }
-        } else {
-          // Level 3: Generate one audio file for all 5 sentences with word-by-word breakdown
-          const batch3 = await generateConversationSetLocal();
-          if (batch3.length === 0) {
-            // Fallback: generate one sentence if batch failed
-            const sent = await generateQuizSentence(3);
-            if (sent) {
-              setGeneratedSentences([{ english: String(sent.english || ''), korean: String(sent.korean || '') }]);
-            }
-          } else {
-            // Show the batch in UI
-            setGeneratedSentences(batch3);
-            
-            // Show loading state
-            setIsGeneratingLevel3Audio(true);
-            setLevel3AudioProgress(0);
-            
-            // Check if batch3 already has wordPairs saved (from loaded conversation)
-            // If they do, use them; otherwise generate new ones
-            const hasWordPairs = batch3.every(item => Array.isArray(item.wordPairs) && item.wordPairs.length > 0);
-            
-            let sentencesWithPairs;
-            if (hasWordPairs) {
-              // Use saved word pairs - format them for prepareLevel3AudioData
-              setLevel3AudioProgress(10);
-              sentencesWithPairs = batch3.map(item => ({
-                english: String(item.english || ''),
-                korean: String(item.korean || ''),
-                wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
-                  ko: String(pair.ko || pair.korean || ''),
-                  en: String(pair.en || pair.english || '')
-                })) : []
-              }));
-              setLevel3AudioProgress(50);
-            } else {
-              // Generate word pairs for all sentences using audio pattern utility
-              setLevel3AudioProgress(10);
-              sentencesWithPairs = await prepareLevel3AudioData(
-                batch3,
-                getWordByWordPairs,
-                (progress) => setLevel3AudioProgress(progress)
-              );
-            }
-            
-            // Generate Level 3 audio using audio pattern utility
-            setLevel3AudioProgress(60);
-            const audioUrl = await generateLevel3Audio(
-              sentencesWithPairs,
-              Math.max(0, Number(quizDelaySec) || 0.5)
-            );
-            setLevel3AudioProgress(100);
-            
-            if (audioUrl) {
-              setConversationAudioUrl(audioUrl);
-              setIsGeneratingLevel3Audio(false);
-              setLevel3AudioProgress(0);
-              // Find conversation title from saved conversations or use default
-              const currentConv = savedConversations.find(c => c.audioUrl === audioUrl) || 
-                                 (isPlaylistMode && playlistIndex >= 0 && playlistIndex < playlist.length ? playlist[playlistIndex] : null);
-              const convTitle = currentConv ? currentConv.title : (currentConversationTitle || 'New Conversation');
-              setCurrentConversationTitle(convTitle);
-              // Play the audio immediately (it will loop automatically)
-              await playConversationAudio(true, audioUrl, convTitle); // true = loop, pass URL directly
-              // Keep the loop running while playing (audio loops automatically)
-              while (playingRef.current && quizLoopRef.current) {
-                await waitWhilePaused();
-                if (!playingRef.current || !quizLoopRef.current) break;
-                await new Promise(r => setTimeout(r, 500));
-              }
-            } else {
-              setIsGeneratingLevel3Audio(false);
-              setLevel3AudioProgress(0);
-              setError('Failed to generate audio: No audio URL returned');
-            }
-          }
-        }
-        }
-      } else {
-        // Recording mode: Use individual audio files
-        updateMediaSession('Audio Learning', 'Korean Learning', true);
-        while (playingRef.current && quizLoopRef.current) {
-          await waitWhilePaused(); if (!playingRef.current) break;
-          let english = '';
-          let korean = '';
-          const level = Number(quizDifficulty) || 1;
-          if (level === 1) {
-            // Level 1: Single word
-            const w = words[Math.floor(Math.random() * words.length)];
-            setCurrentQuizWord(w);
-            setCurrentQuizSentence(null);
-            english = String(w.english || '');
-            const w2 = applyPronounAndTenseIfVerb(w);
-            korean = String(w2.korean || '');
-          } else {
-            // Level 2 or 3: Sentences
-            const sent = await generateQuizSentence(level);
-            if (!sent) break;
-            setCurrentQuizWord(null);
-            setCurrentQuizSentence(sent);
-            english = String(sent.english || '');
-            korean = String(sent.korean || '');
-          }
-          await speak(`How do you say "${english}"?`, 'en-US', 1.0);
-          if (!playingRef.current || !quizLoopRef.current) break;
-          await waitWhilePaused(); if (!playingRef.current) break;
-          
-          let recordedAudioUrl = null;
-          let recognizedTextValue = '';
-          
-          // Recording mode: Record and play back user's answer
-          setRecordedUrl((prev) => { if (prev) { try { URL.revokeObjectURL(prev); } catch (_) {} } return ''; });
-          const srStarted = startSpeechRecognition();
-          if (!playingRef.current || !quizLoopRef.current) break;
-          await waitWhilePaused(); if (!playingRef.current) break;
-          await startMicRecording();
-          // Respect pause during recording window
-          const recordUntil = Date.now() + Math.max(0, Number(quizRecordDurationSec) || 0) * 1000;
-          while (Date.now() < recordUntil && playingRef.current && quizLoopRef.current) {
-            if (pausedRef.current) break;
-            await new Promise(r => setTimeout(r, 100));
-          }
-          recordedAudioUrl = await stopMicRecording();
-          if (srStarted) {
-            // allow SR to finalize result
-            await new Promise(r => setTimeout(r, 200));
-            stopSpeechRecognition();
-            recognizedTextValue = String(recognizedRef.current || recognizedText || '');
-          }
-          if (!playingRef.current || !quizLoopRef.current) break;
-          await waitWhilePaused(); if (!playingRef.current) break;
-          await speak('Recording stopped.', 'en-US', 1.0);
-          if (!playingRef.current || !quizLoopRef.current) break;
-          await waitWhilePaused(); if (!playingRef.current) break;
-          await new Promise(r => setTimeout(r, Math.max(0, Number(quizDelaySec) || 0) * 1000));
-          if (recordedAudioUrl) {
-            await waitWhilePaused(); if (!playingRef.current) break;
-            await speak('Playing recording.', 'en-US', 1.0);
-            if (!playingRef.current || !quizLoopRef.current) break;
-            await playRecorded(recordedAudioUrl);
-          }
-          if (!playingRef.current || !quizLoopRef.current) break;
-          await waitWhilePaused(); if (!playingRef.current) break;
-          await new Promise(r => setTimeout(r, Math.max(0, Number(quizDelaySec) || 0) * 1000));
-          if (recordedAudioUrl) {
-            await waitWhilePaused(); if (!playingRef.current) break;
-            await speak('한국어로', 'ko-KR', 1.0);
-          }
-          if (!playingRef.current || !quizLoopRef.current) break;
-          
-          // Explanation format: English sentence, Korean sentence, word pairs, Korean sentence again
-          // 1. English sentence
-          updateMediaSession(english, 'English', true);
-          await waitWhilePaused(); if (!playingRef.current) break;
-          await speak(english, 'en-US', 1.0);
-          if (!playingRef.current || !quizLoopRef.current) break;
-          await waitWhilePaused(); if (!playingRef.current) break;
-          // 2. Korean sentence
-          updateMediaSession(korean, 'Korean', true);
-          await waitWhilePaused(); if (!playingRef.current) break;
-          await speak(korean, 'ko-KR', 1.0);
-          if (!playingRef.current || !quizLoopRef.current) break;
-          await waitWhilePaused(); if (!playingRef.current) break;
-          // 3. Each Korean word and its translation
-          try {
-            const pairs = await getWordByWordPairs(english, korean);
-            if (Array.isArray(pairs) && pairs.length > 0) {
-              for (const pair of pairs) {
-                if (!playingRef.current || !quizLoopRef.current) break;
-                updateMediaSession(String(pair.ko || ''), 'Korean', true);
-                await waitWhilePaused(); if (!playingRef.current) break;
-                await speak(String(pair.ko || ''), 'ko-KR', 1.0);
-                if (!playingRef.current || !quizLoopRef.current) break;
-                updateMediaSession(String(pair.en || ''), 'English', true);
-                await waitWhilePaused(); if (!playingRef.current) break;
-                await speak(String(pair.en || ''), 'en-US', 1.0);
-                await new Promise(r => setTimeout(r, 150));
-              }
-            }
-          } catch (_) {
-            // Fallback: if word pairs fail, continue without them
-          }
-          if (!playingRef.current || !quizLoopRef.current) break;
-          await waitWhilePaused(); if (!playingRef.current) break;
-          // 4. Whole Korean sentence again
-          updateMediaSession(korean, 'Korean', true);
-          await waitWhilePaused(); if (!playingRef.current) break;
-          await speak(korean, 'ko-KR', 1.0);
-          // Push to history (only in recording mode if we have recognized text)
-          if (recognizedTextValue) {
-            pushHistory({
-              ts: Date.now(),
-              english: english,
-              recognized: recognizedTextValue,
-              korean: korean
-            });
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-      }
-    } finally {
-      setIsQuizLooping(false);
-      quizLoopRef.current = false;
-      playingRef.current = false;
-      pausedRef.current = false;
-      stopLoop(); // Stop the loop if it was playing
-      updateMediaSession('Audio Learning', '', false);
-      // Release wake lock when done
-      await releaseWakeLock();
-      // Stop keep-alive if learning mode is not running
-      if (!playingRef.current) {
-        stopKeepAlive();
-      }
-    }
-  }, [ensureLearningWords, quizMode, startMicRecording, stopMicRecording, playRecorded, quizDelaySec, quizRecordDurationSec, startSpeechRecognition, stopSpeechRecognition, recognizedText, pushHistory, quizDifficulty, generateQuizSentence, waitWhilePaused, setIndex, applyPronounAndTenseIfVerb, getWordByWordPairs, generateConversationSetLocal]);
+  const handleStartQuizLoop = React.useCallback(
+    createHandleStartQuizLoop({
+      setIsQuizLooping,
+      playingRef,
+      pausedRef,
+      setIsPaused,
+      quizLoopRef,
+      requestWakeLock,
+      startKeepAlive,
+      releaseWakeLock,
+      stopKeepAlive,
+      quizDifficulty,
+      quizMode,
+      conversationAudioRef,
+      isPlaylistMode,
+      playlist,
+      playNextConversationRef,
+      playPreviousConversationRef,
+      ensureLearningWords,
+      setIndex,
+      applyPronounAndTenseIfVerbMemo,
+      setCurrentSetWords,
+      setLoopGenerating,
+      setLoopProgress,
+      generateAndPlayLoop,
+      quizDelaySec,
+      waitWhilePaused,
+      generateQuizSentenceMemo,
+      setGeneratedSentences,
+      speak,
+      generateConversationSetLocal,
+      setIsGeneratingLevel3Audio,
+      setLevel3AudioProgress,
+      getWordByWordPairsMemo,
+      setConversationAudioUrl,
+      savedConversations,
+      playlistIndex,
+      currentConversationTitle,
+      setCurrentConversationTitle,
+      playConversationAudio,
+      quizRecordDurationSec,
+      startMicRecording,
+      stopMicRecording,
+      playRecorded,
+      startSpeechRecognition,
+      stopSpeechRecognition,
+      recognizedRef,
+      recognizedText,
+      pushHistory,
+      setCurrentQuizWord,
+      setCurrentQuizSentence,
+    }),
+    [ensureLearningWords, quizMode, startMicRecording, stopMicRecording, playRecorded, quizDelaySec, quizRecordDurationSec, startSpeechRecognition, stopSpeechRecognition, recognizedText, waitWhilePaused, setIndex, applyPronounAndTenseIfVerbMemo, getWordByWordPairsMemo, generateConversationSetLocal, isPlaylistMode, playlist, playlistIndex, currentConversationTitle, playConversationAudio, generateQuizSentenceMemo]
+  );
 
   // Function to actually start autoplay (called from button click or auto-trigger)
   const startAutoplayAudio = React.useCallback(async () => {
@@ -2447,98 +1478,146 @@ Provide an accurate English translation.`;
                 )}
               </div>
               {/* Conjugation hints removed */}
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button
+                  className="audio-btn"
+                  onClick={() => {
+                    console.log('[Playlist] Previous button clicked:', { isPlaylistMode, playlistLength: playlist.length, playlistIndex });
+                    playPreviousConversation();
+                  }}
+                  title="Previous Conversation"
+                  aria-label="Previous Conversation"
+                  disabled={!isPlaylistMode || playlist.length <= 1}
+                  style={{ opacity: (!isPlaylistMode || playlist.length <= 1) ? 0.5 : 1, cursor: (!isPlaylistMode || playlist.length <= 1) ? 'not-allowed' : 'pointer' }}
+                >
+                  ⏮
+                </button>
                 <button
                   className="audio-btn"
                   onClick={async () => {
                     const level = Number(quizDifficulty) || 1;
+                    const audio = conversationAudioRef.current;
+                    
+                    // If currently playing/looping, pause/resume it
                     if (isQuizLooping) {
-                      stopAll();
-                    } else {
-                      if (!isLoadingLearningWords) {
-                        // If audio is already generated, just play it
-                        if (conversationAudioUrl && quizMode === 'hands-free' && level === 3) {
-                          setIsQuizLooping(true);
-                          playingRef.current = true;
+                      if (isPaused) {
+                        if (quizMode === 'hands-free' && level === 3 && audio) {
+                          try { 
+                            audio.play().catch(_ => {});
+                          } catch (_) {}
                           pausedRef.current = false;
                           setIsPaused(false);
-                          quizLoopRef.current = true;
-                          startKeepAlive();
-                          try {
-                            // Find conversation title from saved conversations
-                            const currentConv = savedConversations.find(c => c.audioUrl === conversationAudioUrl) || 
-                                               (isPlaylistMode && playlistIndex >= 0 && playlistIndex < playlist.length ? playlist[playlistIndex] : null);
-                            const convTitle = currentConv ? currentConv.title : (currentConversationTitle || 'Conversation Audio');
-                            setCurrentConversationTitle(convTitle);
-                            await playConversationAudio(true, conversationAudioUrl, convTitle); // true = loop, pass URL directly
-                            // Keep the loop running while playing (audio loops automatically)
-                            while (playingRef.current && quizLoopRef.current) {
-                              await waitWhilePaused();
-                              if (!playingRef.current || !quizLoopRef.current) break;
-                              await new Promise(r => setTimeout(r, 500));
-                            }
-                          } catch (err) {
-                            console.error('Failed to play audio:', err);
-                            setError(`Failed to play audio: ${err.message || 'Unknown error'}`);
-                          } finally {
-                            setIsQuizLooping(false);
-                            quizLoopRef.current = false;
-                            playingRef.current = false;
-                            pausedRef.current = false;
-                            updateMediaSession('Audio Learning', '', false);
-                            await releaseWakeLock();
-                            if (!quizLoopRef.current) {
-                              stopKeepAlive();
-                            }
-                          }
-                        } else if (quizMode === 'hands-free' && level === 3) {
-                          handlePlayCurrentConversation();
                         } else {
-                          handleStartQuizLoop();
+                          resumeLoop();
+                          pausedRef.current = false;
+                          setIsPaused(false);
+                        }
+                      } else {
+                        if (quizMode === 'hands-free' && level === 3 && audio) {
+                          try { 
+                            audio.pause(); 
+                          } catch (_) {}
+                          pausedRef.current = true;
+                          setIsPaused(true);
+                        } else {
+                          pauseLoop();
+                          pausedRef.current = true;
+                          setIsPaused(true);
                         }
                       }
+                      return;
                     }
-                  }}
-                  title={isQuizLooping ? 'Stop' : (conversationAudioUrl && (Number(quizDifficulty) || 1) === 3 ? 'Start/Play Audio' : 'Start')}
-                  aria-label={isQuizLooping ? 'Stop' : 'Start'}
-                >
-                  {isQuizLooping ? 'Stop' : 'Start'}
-                </button>
-                <button
-                  className="audio-btn"
-                  onClick={() => {
-                    const level = Number(quizDifficulty) || 1;
-                    const audio = conversationAudioRef.current;
+                    
+                    // Check if audio exists and can be played/paused
+                    const hasAudio = (quizMode === 'hands-free' && level === 3 && audio && conversationAudioUrl) ||
+                                   (quizMode !== 'hands-free' || level !== 3);
+                    
+                    // If audio exists and we're paused, resume
+                    if (hasAudio && isPaused) {
                     if (quizMode === 'hands-free' && level === 3 && audio) {
-                      if (isPaused) {
                         try { 
                           audio.play().catch(_ => {});
                         } catch (_) {}
                         pausedRef.current = false;
                         setIsPaused(false);
                       } else {
+                        resumeLoop();
+                        pausedRef.current = false;
+                        setIsPaused(false);
+                      }
+                      return;
+                    }
+                    
+                    // If audio exists and is playing, pause it
+                    if (hasAudio && !isPaused && (audio && !audio.paused || !audio)) {
+                      if (quizMode === 'hands-free' && level === 3 && audio) {
                         try { 
                           audio.pause(); 
                         } catch (_) {}
                         pausedRef.current = true;
                         setIsPaused(true);
-                      }
-                    } else {
-                      if (isPaused) {
-                        resumeLoop();
-                        pausedRef.current = false;
-                        setIsPaused(false);
                       } else {
                         pauseLoop();
                         pausedRef.current = true;
                         setIsPaused(true);
                       }
+                      return;
+                    }
+                    
+                    // Otherwise, start/generate audio
+                    if (!isLoadingLearningWords) {
+                      // Auto-create playlist if it doesn't exist and we have conversations (always in playlist mode)
+                      if (playlist.length === 0 && savedConversations && savedConversations.length > 0) {
+                        const conversationIds = savedConversations.map(c => c.id).filter(Boolean);
+                        if (conversationIds.length > 0) {
+                          setPlaylist(savedConversations);
+                          setPlaylistIndex(0);
+                          setIsPlaylistMode(true);
+                          await savePlaylist(conversationIds, 0);
+                        }
+                      }
+                      
+                      // For Level 3, always use handlePlayCurrentConversation which checks for wordPairs
+                      // This ensures wordPairs are included in the audio generation
+                      if (quizMode === 'hands-free' && level === 3) {
+                        handlePlayCurrentConversation();
+                      } else {
+                        handleStartQuizLoop();
+                      }
                     }
                   }}
-                  title={isPaused ? 'Resume' : 'Pause'}
-                  aria-label={isPaused ? 'Resume' : 'Pause'}
+                  title={
+                    isQuizLooping 
+                      ? (isPaused ? 'Resume' : 'Pause')
+                      : (isPaused 
+                          ? 'Resume' 
+                          : ((conversationAudioUrl && (Number(quizDifficulty) || 1) === 3 && conversationAudioRef.current && !conversationAudioRef.current.paused) || (!conversationAudioUrl && (Number(quizDifficulty) || 1) !== 3))
+                            ? 'Pause' 
+                            : 'Start')
+                  }
+                  aria-label={isQuizLooping ? (isPaused ? 'Resume' : 'Pause') : (isPaused ? 'Resume' : 'Start/Play')}
                 >
-                  {isPaused ? '▶️' : '⏸'}
+                  {isQuizLooping 
+                    ? (isPaused ? '▶️' : '⏸')
+                    : (isPaused 
+                        ? '▶️' 
+                        : ((conversationAudioUrl && (Number(quizDifficulty) || 1) === 3 && conversationAudioRef.current && !conversationAudioRef.current.paused) || (!conversationAudioUrl && (Number(quizDifficulty) || 1) !== 3))
+                          ? '⏸' 
+                          : '▶️')
+                  }
+                </button>
+                <button
+                  className="audio-btn"
+                  onClick={() => {
+                    console.log('[Playlist] Next button clicked:', { isPlaylistMode, playlistLength: playlist.length, playlistIndex });
+                    playNextConversation();
+                  }}
+                  title="Next Conversation"
+                  aria-label="Next Conversation"
+                  disabled={!isPlaylistMode || playlist.length <= 1}
+                  style={{ opacity: (!isPlaylistMode || playlist.length <= 1) ? 0.5 : 1, cursor: (!isPlaylistMode || playlist.length <= 1) ? 'not-allowed' : 'pointer' }}
+                >
+                  ⏭
                 </button>
               </div>
             {loopGenerating && (
@@ -2616,219 +1695,26 @@ Provide an accurate English translation.`;
                 </div>
               )}
               {(Number(quizDifficulty) || 1) >= 2 && generatedSentences && generatedSentences.length > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <span>Generated Sentences (Level >= 2)</span>
-                    {currentConversationId && (
-                      <span style={{ fontSize: 11, color: '#666', fontWeight: 400 }}>
-                        ID: {currentConversationId}
-                      </span>
-                    )}
-                    <button
-                      className="audio-mini-btn"
-                      onClick={() => setShowAudioPatternDetails(!showAudioPatternDetails)}
-                      style={{ marginLeft: 'auto', fontSize: 11 }}
-                      title={showAudioPatternDetails ? 'Hide audio pattern details' : 'Show audio pattern details'}
-                    >
-                      {showAudioPatternDetails ? 'Hide Pattern' : 'Show Pattern'}
-                    </button>
-                  </div>
-                  <div style={{ display: 'grid', gap: 12 }}>
-                    {generatedSentences.map((s, i) => (
-                      <div key={i} style={{ 
-                        padding: '16px', 
-                        border: '2px solid #d1d5db', 
-                        borderRadius: 10, 
-                        background: '#ffffff',
-                        display: 'grid',
-                        gap: 12
-                      }}>
-                        {/* Sentence number */}
-                        <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', letterSpacing: '0.5px' }}>
-                          Sentence {i + 1}
-                        </div>
-                        
-                        {/* Full sentences - larger and more prominent */}
-                        <div style={{ display: 'grid', gap: 8 }}>
-                          <div>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Korean</div>
-                            <div className="audio-ko" style={{ 
-                              padding: '14px 16px', 
-                              border: '2px solid #3b82f6', 
-                              borderRadius: 8,
-                              background: '#eff6ff',
-                              fontSize: 'clamp(18px, 4.5vw, 20px)',
-                              lineHeight: 1.8,
-                              wordBreak: 'keep-all',
-                              fontWeight: 600,
-                              color: '#1e40af'
-                            }}>{s.korean}</div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }}>English</div>
-                            <div className="audio-en" style={{ 
-                              padding: '14px 16px', 
-                              border: '2px solid #10b981', 
-                              borderRadius: 8,
-                              background: '#f0fdf4',
-                              fontSize: 'clamp(16px, 4vw, 18px)',
-                              lineHeight: 1.8,
-                              wordBreak: 'break-word',
-                              fontWeight: 500,
-                              color: '#065f46'
-                            }}>{s.english}</div>
-                          </div>
-                        </div>
-                        
-                        {/* Word-by-word breakdown - clear table-like structure */}
-                        {Array.isArray(s.wordPairs) && s.wordPairs.length > 0 && (
-                          <div style={{ 
-                            padding: '12px 16px', 
-                            background: '#f9fafb', 
-                            border: '2px solid #e5e7eb', 
-                            borderRadius: 8
-                          }}>
-                            <div style={{ fontWeight: 700, marginBottom: 12, color: '#111827', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                              Word-by-Word Breakdown
-                            </div>
-                            <div style={{ 
-                              display: 'grid', 
-                              gap: 8
-                            }}>
-                              {s.wordPairs.map((pair, idx) => (
-                                <div key={idx} style={{ 
-                                  display: 'grid',
-                                  gridTemplateColumns: 'auto 1fr',
-                                  gap: 12,
-                                  alignItems: 'center',
-                                  padding: '10px 12px',
-                                  background: '#ffffff',
-                                  border: '1px solid #d1d5db',
-                                  borderRadius: 6,
-                                  transition: 'all 0.2s'
-                                }}>
-                                  <div style={{ 
-                                    minWidth: '40px',
-                                    textAlign: 'center',
-                                    fontSize: 11,
-                                    fontWeight: 600,
-                                    color: '#6b7280',
-                                    background: '#f3f4f6',
-                                    padding: '4px 8px',
-                                    borderRadius: 4
-                                  }}>
-                                    {idx + 1}
-                                  </div>
-                                  <div style={{ 
-                                    display: 'flex', 
-                                    alignItems: 'center', 
-                                    gap: 12,
-                                    flexWrap: 'wrap'
-                                  }}>
-                                    <span className="audio-ko" style={{ 
-                                      fontWeight: 700, 
-                                      fontSize: 'clamp(16px, 4vw, 18px)',
-                                      color: '#1e40af',
-                                      padding: '6px 10px',
-                                      background: '#eff6ff',
-                                      borderRadius: 5,
-                                      border: '1px solid #93c5fd'
-                                    }}>{pair.ko || pair.korean || ''}</span>
-                                    <span style={{ 
-                                      color: '#9ca3af', 
-                                      fontSize: 14,
-                                      fontWeight: 600
-                                    }}>→</span>
-                                    <span className="audio-en" style={{ 
-                                      color: '#065f46', 
-                                      fontSize: 'clamp(14px, 3.5vw, 16px)',
-                                      fontWeight: 500,
-                                      padding: '6px 10px',
-                                      background: '#f0fdf4',
-                                      borderRadius: 5,
-                                      border: '1px solid #86efac'
-                                    }}>{pair.en || pair.english || ''}</span>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                  {/* Conversation save/export controls (Level 3) */}
-                  <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <button className="audio-btn" onClick={saveConversationSet} title="Save this 5-sentence conversation">
-                        Save Conversation
-                      </button>
-                      {currentConversationId && (
-                        <button 
-                          className="audio-btn" 
-                          onClick={async () => {
-                            if (!confirm('Delete the currently loaded conversation? This will clear it from the screen.')) return;
-                            
-                            // Find the conversation by ID
-                            const currentConv = savedConversations.find(c => c.id === currentConversationId);
-                            
-                            if (currentConv) {
-                              // Delete from saved conversations
-                              try {
-                                // Try to delete from server if it has a numeric ID (server-saved)
-                                const serverId = typeof currentConv.id === 'number' || /^\d+$/.test(String(currentConv.id)) ? parseInt(currentConv.id, 10) : null;
-                                if (serverId && Number.isFinite(serverId)) {
-                                  try {
-                                    await api.deleteConversation(serverId);
-                                  } catch (err) {
-                                    console.warn('Failed to delete from server:', err);
-                                  }
-                                }
-                                // Delete from local storage
-                                const next = savedConversations.filter(x => x.id !== currentConversationId);
-                                persistConversations(next);
-                                // Clear default if this was the default conversation
-                                if (currentConversationId === defaultConversationId) {
-                                  setDefaultConversation(null);
-                                }
-                                // Refresh from server to sync
-                                try {
-                                  await fetchServerConversations();
-                                } catch (_) {}
-                              } catch (err) {
-                                console.error('Error deleting conversation:', err);
-                              }
-                            }
-                            
-                            // Clear the loaded conversation
-                            setGeneratedSentences([]);
-                            setCurrentConversationId(null);
-                            setConversationAudioUrl('');
-                            setCurrentConversationTitle('');
-                            
-                            // Stop any playing audio
-                            try {
-                              const audio = conversationAudioRef.current;
-                              if (audio) {
-                                audio.pause();
-                                audio.currentTime = 0;
-                              }
-                            } catch (_) {}
-                            
-                            // Stop quiz loop if running
-                            if (isQuizLooping) {
-                              stopAll();
-                            }
-                          }}
-                          title={`Delete conversation ID: ${currentConversationId}`}
-                          style={{ background: '#f44336', color: 'white' }}
-                        >
-                          Delete Current Conversation
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
+                <SentenceDisplay
+                  generatedSentences={generatedSentences}
+                  currentConversationId={currentConversationId}
+                  showAudioPatternDetails={showAudioPatternDetails}
+                  setShowAudioPatternDetails={setShowAudioPatternDetails}
+                  saveConversationSet={saveConversationSet}
+                  savedConversations={savedConversations}
+                  defaultConversationId={defaultConversationId}
+                  setDefaultConversation={setDefaultConversation}
+                  fetchServerConversations={fetchServerConversations}
+                  persistConversations={persistConversations}
+                  api={api}
+                  setGeneratedSentences={setGeneratedSentences}
+                  setCurrentConversationId={setCurrentConversationId}
+                  setConversationAudioUrl={setConversationAudioUrl}
+                  setCurrentConversationTitle={setCurrentConversationTitle}
+                  isQuizLooping={isQuizLooping}
+                  stopAll={stopAll}
+                  conversationAudioRef={conversationAudioRef}
+                />
               )}
                 {quizMode === 'recording' && (
                   <>
@@ -2850,401 +1736,71 @@ Provide an accurate English translation.`;
           </div>
         </div>
         <div className="audio-column">
-          {quizMode === 'hands-free' && (Number(quizDifficulty) || 1) === 3 && (
-            <div className="audio-card" style={{ marginTop: 12 }}>
-              <h2 className="audio-section-title">New Conversation</h2>
-              <div style={{ display: 'grid', gap: 8, padding: '12px', background: '#f8f9fa', borderRadius: 6, border: '1px solid #ddd' }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Conversation Context (Optional)</div>
-                <div style={{ fontSize: 11, color: '#666', marginBottom: 8 }}>
-                  Enter example sentences to guide the conversation topic and style
+          <NewConversationForm
+            quizMode={quizMode}
+            quizDifficulty={quizDifficulty}
+            conversationContextKorean={conversationContextKorean}
+            setConversationContextKorean={setConversationContextKorean}
+            conversationContextEnglish={conversationContextEnglish}
+            setConversationContextEnglish={setConversationContextEnglish}
+            handleGenerateNewConversation={handleGenerateNewConversation}
+          />
+          <ConversationList
+            savedConversations={savedConversations}
+            defaultConversationId={defaultConversationId}
+            setDefaultConversation={setDefaultConversation}
+            fetchServerConversations={fetchServerConversations}
+            setPlaylist={setPlaylist}
+            setPlaylistIndex={setPlaylistIndex}
+            setIsPlaylistMode={setIsPlaylistMode}
+            isPlaylistMode={isPlaylistMode}
+            playlist={playlist}
+            playlistIndex={playlistIndex}
+            savePlaylist={savePlaylist}
+            quizDifficulty={quizDifficulty}
+            quizDelaySec={quizDelaySec}
+            generateLevel3Audio={generateLevel3Audio}
+            generateLevel3AudioForItems={generateLevel3AudioForItems}
+            setGeneratedSentences={setGeneratedSentences}
+            setCurrentConversationId={setCurrentConversationId}
+            setCurrentConversationTitle={setCurrentConversationTitle}
+            setConversationAudioUrl={setConversationAudioUrl}
+            playConversationAudioRef={playConversationAudioRef}
+            persistConversations={persistConversations}
+            conversationAudioUrl={conversationAudioUrl}
+            api={api}
+            playPreviousConversation={playPreviousConversation}
+            playNextConversation={playNextConversation}
+          />
+          <WordSetManager
+            showGenerator={showGenerator}
+            setShowGenerator={setShowGenerator}
+            generatorPrompt={generatorPrompt}
+            setGeneratorPrompt={setGeneratorPrompt}
+            generatorLoading={generatorLoading}
+            setGeneratorLoading={setGeneratorLoading}
+            generatedSetTitle={generatedSetTitle}
+            setGeneratedSetTitle={setGeneratedSetTitle}
+            generatedWords={generatedWords}
+            setGeneratedWords={setGeneratedWords}
+            handleGenerateSet={handleGenerateSet}
+            saveGeneratedSet={saveGeneratedSet}
+            playSet={playSet}
+            showManageSets={showManageSets}
+            setShowManageSets={setShowManageSets}
+            wordSets={wordSets}
+            persistSets={persistSets}
+          />
+          <ConsoleErrors
+            consoleErrors={consoleErrors}
+            showErrorPanel={showErrorPanel}
+            setShowErrorPanel={setShowErrorPanel}
+            consoleErrorRef={consoleErrorRef}
+            setConsoleErrors={setConsoleErrors}
+          />
                 </div>
-                <div style={{ display: 'grid', gap: 6 }}>
-                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <span style={{ fontSize: 11, fontWeight: 600 }}>Korean Example</span>
-                    <input
-                      type="text"
-                      value={conversationContextKorean}
-                      onChange={(e) => setConversationContextKorean(e.target.value)}
-                      placeholder="예: 오늘 날씨가 정말 좋네요"
-                      style={{ padding: 8, border: '1px solid #ddd', borderRadius: 4, fontSize: 13 }}
-                    />
-                  </label>
-                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <span style={{ fontSize: 11, fontWeight: 600 }}>English Example</span>
-                    <input
-                      type="text"
-                      value={conversationContextEnglish}
-                      onChange={(e) => setConversationContextEnglish(e.target.value)}
-                      placeholder="e.g., The weather is really nice today"
-                      style={{ padding: 8, border: '1px solid #ddd', borderRadius: 4, fontSize: 13 }}
-                    />
-                  </label>
-                </div>
-                <button
-                  className="audio-btn"
-                  onClick={handleGenerateNewConversation}
-                  title="Generate a new 5‑turn conversation"
-                  aria-label="Generate new conversation"
-                >
-                  Generate New Conversation
-                </button>
               </div>
             </div>
-          )}
-          <div className="audio-card" style={{ marginTop: 12 }}>
-            <h2 className="audio-section-title">Saved Conversations</h2>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-              <button className="audio-btn" onClick={fetchServerConversations}>Refresh from Server</button>
-              <button className="audio-btn" onClick={async () => {
-                if (savedConversations && savedConversations.length > 0) {
-                  setPlaylist(savedConversations);
-                  setPlaylistIndex(0);
-                  setIsPlaylistMode(true);
-                  
-                  // Pre-generate audio for all conversations that don't have it
-                  const conversationsToUpdate = [];
-                  for (const conv of savedConversations) {
-                    if (!conv.audioUrl && conv.items && conv.items.length > 0) {
-                      try {
-                        const audioUrl = await generateConversationAudio(conv.items);
-                        if (audioUrl) {
-                          conversationsToUpdate.push({ ...conv, audioUrl });
-                        } else {
-                          conversationsToUpdate.push(conv);
-                        }
-                      } catch (_) {
-                        conversationsToUpdate.push(conv);
-                      }
-                    } else {
-                      conversationsToUpdate.push(conv);
-                    }
-                  }
-                  
-                  // Update saved conversations with generated audio URLs
-                  if (conversationsToUpdate.some((c, i) => c.audioUrl !== savedConversations[i]?.audioUrl)) {
-                    persistConversations(conversationsToUpdate);
-                    setPlaylist(conversationsToUpdate);
-                  }
-                  
-                  // Load and play first conversation
-                  const first = conversationsToUpdate[0] || savedConversations[0];
-                  setGeneratedSentences(first.items || []);
-                  setCurrentConversationId(first.id || null);
-                  setCurrentConversationTitle(first.title);
-                  if (first.audioUrl) {
-                    setConversationAudioUrl(first.audioUrl);
-                    if (playConversationAudioRef.current) {
-                      await playConversationAudioRef.current(false, first.audioUrl, first.title);
-                    }
-                  } else {
-                    setConversationAudioUrl('');
-                    // Try to generate one more time if still missing
-                    try {
-                      const audioUrl = await generateConversationAudio(first.items);
-                      if (audioUrl) {
-                        setConversationAudioUrl(audioUrl);
-                        const updated = conversationsToUpdate.map(x => 
-                          x.id === first.id ? { ...x, audioUrl } : x
-                        );
-                        persistConversations(updated);
-                        setPlaylist(updated);
-                        if (playConversationAudioRef.current) {
-                          await playConversationAudioRef.current(false, audioUrl, first.title);
-                        }
-                      }
-                    } catch (_) {}
-                  }
-                }
-              }}>Create Playlist</button>
-              {isPlaylistMode && playlist.length > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#666' }}>
-                  <span>Playlist: {playlistIndex + 1} / {playlist.length}</span>
-                  <button className="audio-mini-btn" onClick={playPreviousConversation} disabled={playlist.length <= 1}>⏮</button>
-                  <button className="audio-mini-btn" onClick={playNextConversation} disabled={playlist.length <= 1}>⏭</button>
-                  <button className="audio-mini-btn" onClick={() => {
-                    setIsPlaylistMode(false);
-                    setPlaylist([]);
-                    setPlaylistIndex(-1);
-                  }}>Stop Playlist</button>
-                </div>
-              )}
-            </div>
-            <div style={{ display: 'grid', gap: 8 }}>
-              {(!savedConversations || savedConversations.length === 0) && (
-                <div className="audio-empty">No saved conversations yet.</div>
-              )}
-              {savedConversations.map((c) => (
-                <div key={c.id} className="audio-row" style={{ alignItems: 'center' }}>
-                  <div style={{ flex: 2, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    {c.id === defaultConversationId && <span style={{ fontSize: '1.2em' }}>★</span>}
-                    {c.title}
-                  </div>
-                  <div style={{ flex: 1, fontSize: 11, color: '#666' }}>ID: {c.id || 'N/A'}</div>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    <button className="audio-mini-btn" onClick={async () => {
-                      // Load the conversation items, preserving wordPairs if they exist
-                      const itemsToLoad = Array.isArray(c.items) ? c.items.map(item => ({
-                        korean: String(item.korean || ''),
-                        english: String(item.english || ''),
-                        wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
-                          ko: String(pair.ko || pair.korean || ''),
-                          en: String(pair.en || pair.english || '')
-                        })) : [],
-                        englishWordMapping: item.englishWordMapping || {}
-                      })) : [];
-                      
-                      setGeneratedSentences(itemsToLoad);
-                      setCurrentConversationId(c.id || null);
-                      setCurrentConversationTitle(c.title);
-                      // Auto-create playlist from all conversations if not already in playlist mode
-                      if (!isPlaylistMode && savedConversations && savedConversations.length > 1) {
-                        setPlaylist(savedConversations);
-                        const idx = savedConversations.findIndex(conv => conv.id === c.id);
-                        setPlaylistIndex(idx >= 0 ? idx : 0);
-                        setIsPlaylistMode(true);
-                      } else if (isPlaylistMode) {
-                        // Update playlist index if already in playlist mode
-                        const idx = playlist.findIndex(conv => conv.id === c.id);
-                        if (idx >= 0) {
-                          setPlaylistIndex(idx);
-                        }
-                      }
-                      // Auto-generate audio if not available
-                      if (c.audioUrl) {
-                        setConversationAudioUrl(c.audioUrl);
-                      } else {
-                        setConversationAudioUrl('');
-                        // Generate audio automatically
-                        try {
-                          const audioUrl = await generateConversationAudio(c.items);
-                          if (audioUrl) {
-                            // Update the saved conversation with the new audio URL
-                            const next = savedConversations.map(x => 
-                              x.id === c.id ? { ...x, audioUrl } : x
-                            );
-                            persistConversations(next);
-                            setConversationAudioUrl(audioUrl);
-                          }
-                        } catch (_) {}
-                      }
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}>Load</button>
-                    <button className="audio-mini-btn" onClick={() => {
-                      setDefaultConversation(c.id === defaultConversationId ? null : c.id);
-                    }} style={{ 
-                      background: c.id === defaultConversationId ? '#4caf50' : undefined,
-                      color: c.id === defaultConversationId ? 'white' : undefined
-                    }} title={c.id === defaultConversationId ? 'Default (click to unset)' : 'Set as default'}>
-                      {c.id === defaultConversationId ? '★ Default' : 'Set Default'}
-                    </button>
-                    <button className="audio-mini-btn" onClick={() => {
-                      const urlToDownload = c.audioUrl || conversationAudioUrl;
-                      if (!urlToDownload) return;
-                      try {
-                        const a = document.createElement('a');
-                        a.href = urlToDownload;
-                        a.download = 'conversation.mp3';
-                        document.body.appendChild(a);
-                        a.click();
-                        setTimeout(() => { try { document.body.removeChild(a); } catch (_) {} }, 0);
-                      } catch (_) {}
-                    }} disabled={!c.audioUrl && !conversationAudioUrl}>Download</button>
-                    <button className="audio-mini-btn" onClick={() => {
-                      const t = prompt('Rename conversation', c.title);
-                      if (t && t.trim()) {
-                        const next = savedConversations.map(x => x.id===c.id ? { ...x, title: t.trim() } : x);
-                        persistConversations(next);
-                      }
-                    }}>Rename</button>
-                    <button className="audio-mini-btn" onClick={async () => {
-                      if (!confirm('Delete this conversation?')) return;
-                      try {
-                        // Try to delete from server if it has a numeric ID (server-saved)
-                        const serverId = typeof c.id === 'number' || /^\d+$/.test(String(c.id)) ? parseInt(c.id, 10) : null;
-                        if (serverId && Number.isFinite(serverId)) {
-                          try {
-                            await api.deleteConversation(serverId);
-                          } catch (err) {
-                            console.warn('Failed to delete from server:', err);
-                            // Continue with local deletion even if server delete fails
-                          }
-                        }
-                        // Delete from local storage
-                        const next = savedConversations.filter(x => x.id !== c.id);
-                        persistConversations(next);
-                        // Clear default if this was the default conversation
-                        if (c.id === defaultConversationId) {
-                          setDefaultConversation(null);
-                        }
-                        // Refresh from server to sync
-                        try {
-                          await fetchServerConversations();
-                        } catch (_) {}
-                      } catch (err) {
-                        console.error('Error deleting conversation:', err);
-                      }
-                    }}>Delete</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="audio-card" style={{ marginTop: 12 }}>
-            <h2 className="audio-section-title">Word Sets</h2>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-              <button className="audio-btn" onClick={() => setShowGenerator(true)}>Generate Set (Chat)</button>
-              <button className="audio-btn" onClick={() => setShowManageSets((v)=>!v)}>{showManageSets ? 'Hide Sets' : 'Show Sets'}</button>
-            </div>
-            {showManageSets && (
-              <div style={{ display: 'grid', gap: 8 }}>
-                {(!wordSets || wordSets.length === 0) && (
-                  <div className="audio-empty">No saved sets yet.</div>
-                )}
-                {wordSets.map((s) => (
-                  <div key={s.id} className="audio-row" style={{ alignItems: 'center' }}>
-                    <div style={{ flex: 2, fontWeight: 600 }}>{s.title}</div>
-                    <div style={{ flex: 1, fontSize: 12, color: '#666' }}>{(s.words||[]).length} words</div>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <button className="audio-mini-btn" onClick={() => playSet(s)}>Play</button>
-                      <button className="audio-mini-btn" onClick={() => {
-                        const t = prompt('Rename set', s.title);
-                        if (t && t.trim()) {
-                          const next = wordSets.map(x => x.id===s.id ? { ...x, title: t.trim() } : x);
-                          persistSets(next);
-                        }
-                      }}>Rename</button>
-                      <button className="audio-mini-btn" onClick={() => {
-                        if (!confirm('Delete this set?')) return;
-                        const next = wordSets.filter(x => x.id !== s.id);
-                        persistSets(next);
-                      }}>Delete</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className="audio-card" style={{ marginTop: 12 }}>
-            <h2 className="audio-section-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span>Console Errors & Warnings</span>
-              {consoleErrors.length > 0 && (
-                <span style={{ 
-                  fontSize: 12, 
-                  background: '#f44336', 
-                  color: 'white', 
-                  padding: '2px 8px', 
-                  borderRadius: 12,
-                  fontWeight: 600
-                }}>
-                  {consoleErrors.length}
-                </span>
-              )}
-            </h2>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-              <button className="audio-btn" onClick={() => setShowErrorPanel(!showErrorPanel)}>
-                {showErrorPanel ? 'Hide Errors' : 'Show Errors'}
-              </button>
-              {consoleErrors.length > 0 && (
-                <button className="audio-btn" onClick={() => {
-                  consoleErrorRef.current = [];
-                  setConsoleErrors([]);
-                }}>
-                  Clear All
-                </button>
-              )}
-            </div>
-            {showErrorPanel && (
-              <div style={{ 
-                maxHeight: '400px', 
-                overflow: 'auto', 
-                border: '1px solid #ddd', 
-                borderRadius: 6, 
-                background: '#fafafa',
-                fontSize: 12
-              }}>
-                {consoleErrors.length === 0 ? (
-                  <div style={{ padding: 16, textAlign: 'center', color: '#666' }}>
-                    No errors or warnings
-                  </div>
-                ) : (
-                  <div style={{ display: 'grid', gap: 0 }}>
-                    {consoleErrors.map((err) => (
-                      <div 
-                        key={err.id} 
-                        style={{ 
-                          padding: '10px 12px', 
-                          borderBottom: '1px solid #eee',
-                          background: err.type === 'error' ? '#ffebee' : '#fff3e0',
-                          wordBreak: 'break-word',
-                          fontFamily: 'monospace'
-                        }}
-                      >
-                        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 4 }}>
-                          <span style={{ 
-                            fontSize: 10, 
-                            fontWeight: 600,
-                            color: err.type === 'error' ? '#c62828' : '#e65100',
-                            minWidth: 50
-                          }}>
-                            {err.type.toUpperCase()}
-                          </span>
-                          <span style={{ fontSize: 10, color: '#666', flex: 1 }}>
-                            {err.timestamp}
-                          </span>
-                        </div>
-                        <div style={{ 
-                          color: err.type === 'error' ? '#b71c1c' : '#bf360c',
-                          whiteSpace: 'pre-wrap',
-                          fontSize: 11,
-                          lineHeight: 1.4
-                        }}>
-                          {err.message}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-      {showGenerator && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }} onClick={() => setShowGenerator(false)}>
-          <div style={{ background: 'white', padding: 16, borderRadius: 8, width: 'min(800px, 95vw)' }} onClick={(e)=>e.stopPropagation()}>
-            <h3 style={{ marginTop: 0 }}>Generate Word Set (Chat)</h3>
-            <div style={{ display: 'grid', gap: 8 }}>
-              <textarea rows={6} value={generatorPrompt} onChange={(e)=>setGeneratorPrompt(e.target.value)} style={{ width: '100%', padding: 8, border: '1px solid #ddd', borderRadius: 6 }} />
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <button className="audio-btn" onClick={handleGenerateSet} disabled={generatorLoading}>Generate</button>
-                <input value={generatedSetTitle} onChange={(e)=>setGeneratedSetTitle(e.target.value)} placeholder="Set title" style={{ flex: 1, padding: 8, border: '1px solid #ddd', borderRadius: 6 }} />
-                <button className="audio-btn" onClick={saveGeneratedSet} disabled={!generatedWords || generatedWords.length === 0}>Save Set</button>
-                <button className="audio-btn" onClick={() => playSet({ id: 'tmp', title: generatedSetTitle, words: generatedWords })} disabled={!generatedWords || generatedWords.length === 0}>Play</button>
-              </div>
-              {generatorLoading && (
-                <div style={{ height: 8, background: '#eee', borderRadius: 6, overflow: 'hidden' }}>
-                  <div style={{ width: '60%', height: 8, background: '#1976d2', animation: 'pulse 1s infinite alternate' }} />
-                </div>
-              )}
-              {generatedWords && generatedWords.length > 0 && (
-                <div style={{ maxHeight: 200, overflow: 'auto', border: '1px solid #eee', borderRadius: 6, padding: 8 }}>
-                  {generatedWords.map((w, i) => (
-                    <div key={i} style={{ display: 'flex', gap: 8, fontSize: 13 }}>
-                      <span style={{ color: '#999' }}>{i + 1}.</span>
-                      <span className="audio-ko" style={{ minWidth: 120 }}>{w.korean}</span>
-                      <span className="audio-en" style={{ opacity: 0.8 }}>{w.english}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                <button className="audio-btn" onClick={() => setShowGenerator(false)}>Close</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
   );
 }
 

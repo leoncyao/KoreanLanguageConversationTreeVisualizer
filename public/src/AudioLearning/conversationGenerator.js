@@ -18,8 +18,21 @@ const parseJsonArraySafe = (text) => {
  */
 export const generateConversationSet = async (contextKorean = '', contextEnglish = '') => {
   try {
+    // Log context sentences if provided
+    if (contextKorean && contextKorean.trim() && contextEnglish && contextEnglish.trim()) {
+      console.log('[generateConversationSet] Context sentences provided:', {
+        korean: contextKorean.trim(),
+        english: contextEnglish.trim()
+      });
+    } else {
+      console.log('[generateConversationSet] No context sentences provided - will make up a random topic');
+    }
+    
     let prompt = `Return ONLY a JSON array of 5 objects like:
 [{"speaker":"A","korean":"...","english":"..."}, ...]
+
+No context was provided, so you must make up a random topic for the conversation. Simulate a random natural conversation between 2 people on any everyday topic or situation - it could be about plans, asking for help, sharing experiences, making suggestions, etc. Be creative and varied. Choose any topic that feels natural and everyday.
+
 Requirements:
 - Natural everyday conversation in polite style (요), 7–12 Korean words per turn
 - Each turn must be EXACTLY ONE phrase/sentence per line (no multiple sentences, no periods in the middle)
@@ -36,15 +49,16 @@ Requirements:
       prompt = `Return ONLY a JSON array of 5 objects like:
 [{"speaker":"A","korean":"...","english":"..."}, ...]
 
-IMPORTANT: Create a conversation that is somewhat inspired by or loosely related to these example sentences. The conversation should feel natural and varied - it doesn't need to match exactly, just be somewhat based on the context. Do NOT use generic weather or template conversations.
+CRITICAL: Create a conversation that is DIRECTLY about the topic, theme, and vocabulary from these example sentences. The conversation MUST focus on the same subject matter as the examples. Do NOT use generic topics like "weekend plans" or "cafe visits" unless those are explicitly mentioned in the examples.
 
-Example sentences for inspiration (use as a loose guide):
+Example sentences that define the conversation topic:
 Korean: ${contextKorean.trim()}
 English: ${contextEnglish.trim()}
 
 Requirements:
-- The conversation should be somewhat related to the example sentences (similar topic, theme, or situation, but can vary)
-- You may incorporate similar vocabulary or concepts from the examples, but feel free to be creative and expand
+- The conversation MUST be about the same topic/subject as the example sentences
+- Use vocabulary and concepts directly related to the examples - if the example mentions "cars", the conversation should be about cars
+- If the example mentions specific words or topics, those should be the PRIMARY focus of the conversation
 - Natural everyday conversation in polite style (요), 7–12 Korean words per turn
 - Each turn must be EXACTLY ONE phrase/sentence per line (no multiple sentences, no periods in the middle)
 - Avoid compound sentences with periods separating clauses; use simple, single-phrase statements
@@ -52,7 +66,6 @@ Requirements:
 - The conversation should feel natural and contextually related (follow-up questions/answers, short plans, clarifications)
 - Avoid rare terms and proper nouns; use common daily-life topics
 - Provide accurate English translations
-- DO NOT default to weather conversations or generic templates - be creative and varied while staying somewhat related to the context
 
 `;
     }

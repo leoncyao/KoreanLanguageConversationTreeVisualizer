@@ -193,9 +193,16 @@ export const api = {
   getJournalEntriesByDate: (date) => fetch(`${API_BASE_URL}/api/journal?date=${encodeURIComponent(date)}`),
   
   // Conversations API
-  deleteConversation: (id) => fetch(`${API_BASE_URL}/api/conversations/${id}`, {
-    method: 'DELETE'
-  }),
+  deleteConversation: (id, audioUrl) => {
+    let url = `${API_BASE_URL}/api/conversations/${id}`;
+    if (audioUrl) {
+      const separator = url.includes('?') ? '&' : '?';
+      url += `${separator}audioUrl=${encodeURIComponent(audioUrl)}`;
+    }
+    return fetch(url, {
+      method: 'DELETE'
+    });
+  },
 
   // Mix API
   getMixState: () => fetch(`${API_BASE_URL}/api/mix`),

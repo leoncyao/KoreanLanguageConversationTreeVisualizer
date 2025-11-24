@@ -76,6 +76,17 @@ function getAudioFilePath(text, lang, rate) {
   return path.join(ttsCacheDir, `${hash}.mp3`);
 }
 
+// Write transcript to text file
+function writeTranscript(filePath, transcript) {
+  try {
+    const transcriptPath = filePath.replace(/\.mp3$/, '.txt');
+    fs.writeFileSync(transcriptPath, transcript, 'utf8');
+    console.log('[TTS] Transcript saved:', path.basename(transcriptPath));
+  } catch (err) {
+    console.error('[TTS] Error writing transcript:', err);
+  }
+}
+
 async function handleTTS(req, res) {
   try {
     const { text, lang = 'ko-KR', rate = 1.0 } = req.body;
@@ -135,6 +146,9 @@ async function handleTTS(req, res) {
       fs.writeFileSync(filePath, Buffer.from(audioBuffer));
       try { console.log('[TTS] saved', { file: fileName, bytes: Buffer.byteLength(Buffer.from(audioBuffer)) }); } catch (_) {}
       
+      // Write transcript
+      writeTranscript(filePath, cleanText);
+      
       // Return URL to saved file
       res.json({ 
         url: `/tts-cache/${fileName}`,
@@ -187,6 +201,7 @@ async function handleTTSBatch(req, res) {
     // Generate the audio file following the format:
     // "How do you say [english]?" -> pause -> [korean]
     const audioBuffers = [];
+    const transcriptLines = [];
     
     for (const word of limitedWords) {
       const korean = String(word.korean || '').trim();
@@ -201,6 +216,7 @@ async function handleTTSBatch(req, res) {
         try {
           const cleanEnglish = removePunctuation(english);
           const promptText = `How do you say ${cleanEnglish}`;
+          transcriptLines.push(promptText);
           const encodedText = encodeURIComponent(promptText);
           const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=${encodedText}`;
           
@@ -239,6 +255,7 @@ async function handleTTSBatch(req, res) {
       if (korean) {
         try {
           const cleanKorean = removePunctuation(korean);
+          transcriptLines.push(cleanKorean);
           const encodedText = encodeURIComponent(cleanKorean);
           const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=ko&client=tw-ob&q=${encodedText}`;
           
@@ -271,6 +288,9 @@ async function handleTTSBatch(req, res) {
     // Save to disk
     fs.writeFileSync(filePath, combinedBuffer);
     try { console.log('[TTS-BATCH] saved', { file: fileName, bytes: combinedBuffer.length }); } catch (_) {}
+    
+    // Write transcript
+    writeTranscript(filePath, transcriptLines.join('\n'));
     
     // Return URL to saved file
     res.json({ 
@@ -316,6 +336,7 @@ async function handleTTSConversation(req, res) {
     }
     // Use shared silence buffer function
     const audioBuffers = [];
+    const transcriptLines = [];
     const silenceBuf = await getSilenceBufferOneSecond();
     const pauseCount = Math.max(0, Math.floor(Number(delaySeconds) || 0));
     const pushPause = () => {
@@ -342,17 +363,29 @@ async function handleTTSConversation(req, res) {
       if (order === 'en-ko') {
         // English then Korean (keep punctuation for full sentences)
         const enBuf = await fetchTts(en, 'en');
-        if (enBuf) audioBuffers.push(enBuf);
+        if (enBuf) {
+          audioBuffers.push(enBuf);
+          transcriptLines.push(`[EN] ${en}`);
+        }
         pushPause();
         const koBuf = await fetchTts(ko, 'ko');
-        if (koBuf) audioBuffers.push(koBuf);
+        if (koBuf) {
+          audioBuffers.push(koBuf);
+          transcriptLines.push(`[KO] ${ko}`);
+        }
       } else {
         // Default: Korean then English (keep punctuation for full sentences)
         const koBuf = await fetchTts(ko, 'ko');
-        if (koBuf) audioBuffers.push(koBuf);
+        if (koBuf) {
+          audioBuffers.push(koBuf);
+          transcriptLines.push(`[KO] ${ko}`);
+        }
         pushPause();
         const enBuf = await fetchTts(en, 'en');
-        if (enBuf) audioBuffers.push(enBuf);
+        if (enBuf) {
+          audioBuffers.push(enBuf);
+          transcriptLines.push(`[EN] ${en}`);
+        }
       }
       // Small delay between requests
       await new Promise((resolve) => setTimeout(resolve, 200));
@@ -363,6 +396,9 @@ async function handleTTSConversation(req, res) {
     const combinedBuffer = Buffer.concat(audioBuffers);
     fs.writeFileSync(filePath, combinedBuffer);
     try { console.log('[TTS-CONV] saved', { file: fileName, bytes: combinedBuffer.length }); } catch (_) {}
+    
+    // Write transcript
+    writeTranscript(filePath, transcriptLines.join('\n'));
     res.json({ url: `/tts-cache/${fileName}`, cached: false, itemCount: normalized.length });
   } catch (err) {
     console.error('TTS conversation error:', err);
@@ -384,16 +420,34 @@ async function handleTTSLevel3(req, res) {
       .map((x) => ({
         english: String((x && x.english) || '').trim(),
         korean: String((x && x.korean) || '').trim(),
-        wordPairs: Array.isArray(x.wordPairs) ? x.wordPairs.map(p => ({
-          en: String((p && p.en) || (p && p.english) || '').trim(),
-          ko: String((p && p.ko) || (p && p.korean) || '').trim()
-        })).filter(p => p.en && p.ko) : []
+        wordPairs: Array.isArray(x.wordPairs) ? x.wordPairs.map(p => {
+          // Only include ko and en fields, explicitly exclude korean and english
+          const ko = String((p && p.ko) || (p && p.korean) || '').trim();
+          const en = String((p && p.en) || (p && p.english) || '').trim();
+          return { ko, en };
+        }).filter(p => p.en && p.ko) : []
       }))
       .filter((x) => x.korean && x.english)
       .slice(0, 10);
     if (normalized.length === 0) {
       return res.status(400).json({ error: 'sentences must include korean and english fields' });
     }
+    // Debug: log wordPairs status
+    const totalWordPairs = normalized.reduce((sum, s) => sum + s.wordPairs.length, 0);
+    const sentencesWithWordPairs = normalized.filter(s => s.wordPairs.length > 0).length;
+    try { 
+      console.log('[TTS-LEVEL3] Normalized sentences:', { 
+        count: normalized.length,
+        sentencesWithWordPairs,
+        totalWordPairs,
+        sample: normalized[0] ? {
+          korean: normalized[0].korean,
+          english: normalized[0].english,
+          wordPairsCount: normalized[0].wordPairs.length,
+          wordPairs: normalized[0].wordPairs
+        } : null
+      }); 
+    } catch (_) {}
     // Hash includes content and delay
     const hashInput = JSON.stringify({ sentences: normalized, delaySeconds });
     const level3Hash = crypto.createHash('md5').update(hashInput).digest('hex');
@@ -405,6 +459,7 @@ async function handleTTSLevel3(req, res) {
     }
     // Use shared silence buffer function
     const audioBuffers = [];
+    const transcriptLines = [];
     const silenceBuf = await getSilenceBufferOneSecond();
     const pauseCount = Math.max(0, Math.floor(Number(delaySeconds) * 10) / 10); // Support decimals
     const pushPause = () => {
@@ -431,35 +486,80 @@ async function handleTTSLevel3(req, res) {
     for (const sent of normalized) {
       // 1. English sentence (keep punctuation for natural intonation)
       const enSentBuf = await fetchTts(sent.english, 'en', false);
-      if (enSentBuf) audioBuffers.push(enSentBuf);
+      if (enSentBuf) {
+        audioBuffers.push(enSentBuf);
+        transcriptLines.push(`[EN] ${sent.english}`);
+      }
       pushPause();
       await new Promise((resolve) => setTimeout(resolve, 200));
       
       // 2. Full Korean sentence (keep punctuation for natural intonation)
       const koSentBuf = await fetchTts(sent.korean, 'ko', false);
-      if (koSentBuf) audioBuffers.push(koSentBuf);
+      if (koSentBuf) {
+        audioBuffers.push(koSentBuf);
+        transcriptLines.push(`[KO] ${sent.korean}`);
+      }
       pushPause();
       await new Promise((resolve) => setTimeout(resolve, 200));
       
       // 3. Word pairs: KO word then EN word for each word (remove punctuation - individual words)
       if (sent.wordPairs && sent.wordPairs.length > 0) {
+        try { 
+          console.log('[TTS-LEVEL3] Processing word pairs for sentence:', {
+            korean: sent.korean,
+            english: sent.english,
+            wordPairsCount: sent.wordPairs.length,
+            wordPairs: sent.wordPairs
+          }); 
+        } catch (_) {}
         for (const pair of sent.wordPairs) {
-          const koWordBuf = await fetchTts(pair.ko, 'ko', true); // Remove punctuation for individual words
-          if (koWordBuf) audioBuffers.push(koWordBuf);
+          // Ensure we have the correct fields - ko should be Korean, en should be English
+          const koText = String((pair.ko || '')).trim();
+          const enText = String((pair.en || '')).trim();
+          
+          // Debug: log what we're about to play (only ko and en)
+          try {
+            console.log('[TTS-LEVEL3] Word pair:', { ko: koText, en: enText });
+          } catch (_) {}
+          
+          if (!koText || !enText) {
+            try { console.warn('[TTS-LEVEL3] Skipping invalid word pair:', pair); } catch (_) {}
+            continue;
+          }
+          
+          // Play Korean word first, then English translation
+          const koWordBuf = await fetchTts(koText, 'ko', true); // Remove punctuation for individual words
+          if (koWordBuf) {
+            audioBuffers.push(koWordBuf);
+            transcriptLines.push(`[KO] ${removePunctuation(koText)}`);
+          }
           // Small pause between KO and EN word
           await new Promise((resolve) => setTimeout(resolve, 150));
-          const enWordBuf = await fetchTts(pair.en, 'en', true); // Remove punctuation for individual words
-          if (enWordBuf) audioBuffers.push(enWordBuf);
+          const enWordBuf = await fetchTts(enText, 'en', true); // Remove punctuation for individual words
+          if (enWordBuf) {
+            audioBuffers.push(enWordBuf);
+            transcriptLines.push(`[EN] ${removePunctuation(enText)}`);
+          }
           // Pause after each word pair (before next pair)
           await new Promise((resolve) => setTimeout(resolve, 200));
         }
         // Longer pause after all word pairs before final sentence
         pushPause();
+      } else {
+        try { 
+          console.warn('[TTS-LEVEL3] No wordPairs found for sentence:', {
+            korean: sent.korean,
+            english: sent.english
+          }); 
+        } catch (_) {}
       }
       
       // 4. Full Korean sentence again (keep punctuation for natural intonation)
       const koSentBuf2 = await fetchTts(sent.korean, 'ko', false);
-      if (koSentBuf2) audioBuffers.push(koSentBuf2);
+      if (koSentBuf2) {
+        audioBuffers.push(koSentBuf2);
+        transcriptLines.push(`[KO] ${sent.korean}`);
+      }
       pushPause();
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
@@ -469,6 +569,9 @@ async function handleTTSLevel3(req, res) {
     const combinedBuffer = Buffer.concat(audioBuffers);
     fs.writeFileSync(filePath, combinedBuffer);
     try { console.log('[TTS-LEVEL3] saved', { file: fileName, bytes: combinedBuffer.length }); } catch (_) {}
+    
+    // Write transcript
+    writeTranscript(filePath, transcriptLines.join('\n'));
     res.json({ url: `/tts-cache/${fileName}`, cached: false, sentenceCount: normalized.length });
   } catch (err) {
     console.error('TTS Level 3 error:', err);

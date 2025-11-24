@@ -7122,3 +7122,531 @@ const updateMediaSession = (title, artist, playing = false, callbacks = {}) => {
 - Font size is now fully controlled by inline style which matches the parent Korean sentence font size
 - Added Practice Text Size setting to sidebar (Navbar.js) for easy access
 - Added event listener in PracticePage.js to sync text size changes from sidebar
+
+### Edit: 2025-01-23
+- Files: `public/src/Practice/PracticePage.js`, `public/src/Practice/components/BlankInput.js`, `public/src/Practice/components/KoreanSentence.js`, `public/src/Practice/components/TranslationDisplay.js`, `public/src/Practice/components/PracticeControls.js`, `public/src/Practice/components/ExplanationBox.js`, `public/src/Practice/components/VariationIndicator.js`, `public/src/Practice/components/SessionSetDialog.js`, `public/src/Practice/components/ProgressPanel.js`, `public/src/Practice/utils.js`
+- Summary: Refactored PracticePage.js into smaller, reusable components. Extracted utility functions (mdToHtml, escapeHtml, removePunctuation) into utils.js. Created 8 new component files for better code organization and maintainability.
+- Rationale: PracticePage.js was 3082 lines long, making it difficult to maintain and understand. Breaking it into smaller components improves code organization, reusability, and makes the codebase easier to navigate and modify. Also adjusted blank input field sizing to use `ch` units for better inline text matching.
+- Code refs:
+```1:6:public/src/Practice/PracticePage.js
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { api } from '../api';
+import { generateVerbPracticeSentence } from '../AudioLearning/verbPractice';
+import { removePunctuation, mdToHtml } from './utils';
+import KoreanSentence from './components/KoreanSentence';
+import TranslationDisplay from './components/TranslationDisplay';
+```
+```2693:2710:public/src/Practice/PracticePage.js
+  return (
+    <div className="sentence-box">
+      <KoreanSentence
+        blankPhrase={blankPhrase}
+        inputValues={inputValues}
+        currentBlankIndex={currentBlankIndex}
+        inputPlaceholder={inputPlaceholder}
+        inputRefs={inputRefs}
+        handleInputChange={handleInputChange}
+        handleKeyDown={handleKeyDown}
+        showAnswerBelow={showAnswerBelow}
+        textSize={textSize}
+        handleSpeakFullThreeTimes={handleSpeakFullThreeTimes}
+      />
+```
+- Components created:
+  - `BlankInput.js`: Inline input field for fill-in-the-blank exercises
+  - `KoreanSentence.js`: Korean sentence display with blanks and audio button
+  - `TranslationDisplay.js`: English translation with optional word highlighting
+  - `PracticeControls.js`: Control buttons (Show Answer, Explain, Skip)
+  - `ExplanationBox.js`: Grammar explanation display with markdown rendering
+  - `VariationIndicator.js`: AI variation progress indicator
+  - `SessionSetDialog.js`: Dialog showing sentences in current session set
+  - `ProgressPanel.js`: Progress bar, session management, and settings controls
+- Utils extracted:
+  - `utils.js`: Contains `mdToHtml`, `escapeHtml`, and `removePunctuation` utility functions
+- Blank input sizing: Changed from `em` to `ch` units for better inline text matching (1.2ch per character instead of 1.5em)
+
+
+### Edit: 2025-01-23
+- Files: `public/src/AudioLearning/AudioLearningPage.js`
+- Summary: Fixed word pairs not being saved to database and not being played in audio playback. Updated conversation loading to always regenerate Level 3 audio when wordPairs exist, ensuring step 3 (word-by-word pairs) is included in audio playback. Updated fetchServerConversations to preserve wordPairs structure when loading from database.
+- Rationale: Bug fix - user reported that audio step 3 (word pairs) was not playing when loading saved conversations. Word pairs were being saved to localStorage but not always used when generating audio. The issue was that when loading conversations, the code was using `generateConversationAudio` (which doesn't include word pairs) instead of `generateLevel3Audio` (which does). Now the code checks if wordPairs exist and always regenerates Level 3 audio to ensure word pairs are included.
+- Code refs:
+```292:307:public/src/AudioLearning/AudioLearningPage.js
+  const fetchServerConversations = React.useCallback(async () => {
+    // ... updated to preserve wordPairs structure when loading from database
+    items: Array.isArray(c.items) ? c.items.map(item => ({
+      korean: String(item.korean || ''),
+      english: String(item.english || ''),
+      wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+        ko: String(pair.ko || pair.korean || ''),
+        en: String(pair.en || pair.english || '')
+      })) : [],
+      englishWordMapping: item.englishWordMapping || {}
+    })) : [],
+```
+```2984:3031:public/src/AudioLearning/AudioLearningPage.js
+                    <button className="audio-mini-btn" onClick={async () => {
+                      // Load conversation - always regenerate Level 3 audio if wordPairs exist
+                      const hasWordPairs = itemsToLoad.every(item => Array.isArray(item.wordPairs) && item.wordPairs.length > 0);
+                      const isLevel3 = (Number(quizDifficulty) || 1) === 3;
+                      
+                      if (hasWordPairs && isLevel3) {
+                        // Always regenerate Level 3 audio with word pairs
+                        const sentencesWithPairs = itemsToLoad.map(item => ({
+                          english: String(item.english || ''),
+                          korean: String(item.korean || ''),
+                          wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+                            ko: String(pair.ko || pair.korean || ''),
+                            en: String(pair.en || pair.english || '')
+                          })) : []
+                        }));
+                        const audioUrl = await generateLevel3Audio(sentencesWithPairs, Math.max(0, Number(quizDelaySec) || 0.5));
+```
+- Changes:
+  - Updated `fetchServerConversations` to normalize items and preserve wordPairs structure when loading from database
+  - Updated conversation loading (Load button) to always regenerate Level 3 audio if wordPairs exist, ensuring word pairs are included in playback
+  - Updated auto-load on startup to regenerate Level 3 audio if wordPairs exist
+  - Updated playlist creation to regenerate Level 3 audio for conversations with wordPairs
+  - Word pairs are now properly saved to database (via JSON.stringify) and loaded from database (via JSON.parse with normalization)
+  - Audio generation now always uses wordPairs when available, following the audio pattern specification (step 3: word-by-word pairs)
+
+
+### Edit: 2025-01-23
+- Files: `public/src/AudioLearning/AudioLearningPage.js`, `backend/database.js`, `backend/server.js`
+- Summary: Made playlist auto-create when start button is clicked, added forward/rewind buttons for playlist navigation, and ensured Android media playback controls use those buttons. Added playlist database storage and API endpoints.
+- Rationale: User requested that the start button should auto-create the playlist, add forward/rewind buttons to skip conversations, and ensure Android media controls work with those buttons. This improves the user experience by making playlist management automatic and providing easy navigation controls.
+- Code refs:
+```189:236:public/src/AudioLearning/AudioLearningPage.js
+  // Navigate to next conversation in playlist
+  const playNextConversation = React.useCallback(async () => {
+    // ... saves playlist index to database and updates MediaSession
+```
+```2571:2705:public/src/AudioLearning/AudioLearningPage.js
+                <button className="audio-btn" onClick={async () => {
+                  // Auto-create playlist if it doesn't exist
+                  if (!isPlaylistMode && savedConversations && savedConversations.length > 0) {
+                    const conversationIds = savedConversations.map(c => c.id).filter(Boolean);
+                    if (conversationIds.length > 0) {
+                      setPlaylist(savedConversations);
+                      setPlaylistIndex(0);
+                      setIsPlaylistMode(true);
+                      await savePlaylist(conversationIds, 0);
+                    }
+                  }
+```
+```2705:2720:public/src/AudioLearning/AudioLearningPage.js
+                {isPlaylistMode && playlist.length > 1 && (
+                  <>
+                    <button className="audio-btn" onClick={playPreviousConversation}>⏮</button>
+                    <button className="audio-btn" onClick={playNextConversation}>⏭</button>
+                  </>
+                )}
+```
+- Changes:
+  - Start button now auto-creates playlist from all saved conversations if playlist doesn't exist
+  - Added forward (⏭) and rewind (⏮) buttons that appear when in playlist mode with multiple conversations
+  - Forward/rewind buttons call `playNextConversation` and `playPreviousConversation` which save playlist state to database
+  - MediaSession handlers in `handleStartQuizLoop` and `playConversationAudio` now include `nexttrack` and `previoustrack` callbacks that work with Android media controls
+  - Playlist navigation functions update MediaSession with new conversation title when switching conversations
+  - Added playlist database table and API endpoints (`GET /api/playlist`, `POST /api/playlist`) to persist playlist state
+  - Playlist is automatically saved to database when created, navigated, or stopped
+
+
+### Edit: 2025-01-23
+- Files: `public/src/AudioLearning/AudioLearningPage.js`, `public/src/AudioLearning/utils/verbHelpers.js`, `public/src/AudioLearning/hooks/useRecording.js`, `public/src/AudioLearning/components/SentenceDisplay.js`, `public/src/AudioLearning/audio/conversationAudio.js`, `public/src/AudioLearning/utils/sentenceGenerators.js`
+- Summary: Refactored AudioLearningPage.js to extract large functions and components into separate files. Extracted verb conjugation helpers, recording logic, sentence display component, conversation audio playback, and sentence generation utilities. Reduced file from 3528 lines to 2676 lines.
+- Rationale: User requested refactoring to get AudioLearningPage.js below 1000 lines. Extracted reusable utilities and components to improve maintainability and code organization.
+- Code refs:
+```1:47:public/src/AudioLearning/AudioLearningPage.js
+import { useRecording } from './hooks/useRecording';
+import { createPlayConversationAudio } from './audio/conversationAudio';
+import SentenceDisplay from './components/SentenceDisplay';
+import {
+  pickRandomPronoun,
+  conjugateVerbSimple,
+  // ... verb helpers
+} from './utils/verbHelpers';
+import {
+  parseJsonObject,
+  parseJsonArraySafe,
+  pickRandom,
+  getWordByWordPairs,
+  // ... sentence generators
+} from './utils/sentenceGenerators';
+```
+- Changes:
+  - Created `utils/verbHelpers.js` with all verb conjugation and sentence building helpers (~220 lines extracted)
+  - Created `hooks/useRecording.js` with recording state and operations (~250 lines extracted)
+  - Created `components/SentenceDisplay.js` for sentence display UI (~215 lines extracted)
+  - Created `audio/conversationAudio.js` for conversation audio playback logic (~220 lines extracted)
+  - Created `utils/sentenceGenerators.js` for sentence generation utilities (~115 lines extracted)
+  - Updated AudioLearningPage.js to import and use all extracted modules
+  - Replaced inline verb helpers with imported functions wrapped in memoized callbacks
+  - Replaced recording state and functions with useRecording hook
+  - Replaced large sentence display JSX with SentenceDisplay component
+  - Replaced playConversationAudio function with createPlayConversationAudio factory
+  - Replaced sentence generation functions with imported utilities
+  - File size reduced from 3528 lines to 2676 lines (852 lines extracted)
+
+### Edit: 2025-01-27
+- Files: `public/src/AudioLearning/utils/sentenceGenerators.js`, `public/src/AudioLearning/AudioLearningPage.js`, `backend/tts.js`, `public/src/AudioLearning/handlers/playCurrentConversationHandler.js`
+- Summary: Fixed word-by-word breakdown audio playing English words instead of Korean words by adding validation to detect and correct swapped ko/en fields in wordPairs
+- Rationale: The AI was sometimes returning wordPairs with swapped ko/en fields, causing the audio to play English words when it should play Korean words first. Added Hangul character detection to validate and auto-correct swapped fields.
+- Code refs:
+```26:43:public/src/AudioLearning/utils/sentenceGenerators.js
+export const getWordByWordPairs = async (api, english, korean) => {
+  // ... validation logic to detect and swap ko/en if fields are reversed
+  // Uses Hangul character detection (Unicode range AC00-D7AF) to identify Korean text
+}
+```
+```470:490:backend/tts.js
+for (const pair of sent.wordPairs) {
+  // Extract ko/en fields with fallback to korean/english
+  const koText = String((pair.ko || pair.korean || '')).trim();
+  const enText = String((pair.en || pair.english || '')).trim();
+  // Play Korean word first, then English translation
+  const koWordBuf = await fetchTts(koText, 'ko', true);
+  // ...
+}
+```
+- Also fixed "Start" button to always call `handlePlayCurrentConversation` for Level 3 instead of playing cached audio URL, ensuring wordPairs are checked and used
+- Added debug logging throughout the wordPairs flow to track data from generation through audio playback
+
+### Edit: 2025-11-24
+- Files: `backend/chat.js`, `backend/tts.js`, `public/src/AudioLearning/audioPattern.js`, `public/src/AudioLearning/AudioLearningPage.js`, `public/src/AudioLearning/handlers/playCurrentConversationHandler.js`, `public/src/AudioLearning/audioQuizModeHandsFree.js`, `public/src/AudioLearning/components/ConversationList.js`, `public/src/AudioLearning/handlers/quizLoopHandler.js`
+- Summary: Disabled number-to-Korean conversion for word-by-word translation prompts and ensured all word pair objects only contain `ko` and `en` fields (removed `korean` and `english` fields)
+- Rationale: User reported that numbers in English translations were being converted to Korean words (e.g., "2 o'clock" became "둘 o'clock") and word pair logs were showing `korean: undefined, english: undefined`. The number converter was running on all chat responses containing Korean characters, including word-by-word translation responses. Also, word pair normalization was creating objects with both old (`korean`, `english`) and new (`ko`, `en`) field names.
+- Code refs:
+```45:48:backend/chat.js
+// Skip number conversion for word-by-word translation prompts
+// These prompts ask for JSON with "ko" and "en" fields, and we don't want to convert numbers in English translations
+const isWordByWordTranslation = /word\s+by\s+word|word-by-word|"ko".*"en"|"en".*"ko"/i.test(prompt);
+
+// Convert numbers to Korean words if the response contains Korean characters
+// BUT skip for word-by-word translations to preserve English translations
+if (outputText && /[가-힣]/.test(outputText) && !isWordByWordTranslation) {
+  outputText = convertNumbersInKoreanText(outputText, prompt);
+}
+```
+```387:391:backend/tts.js
+wordPairs: Array.isArray(x.wordPairs) ? x.wordPairs.map(p => {
+  // Only include ko and en fields, explicitly exclude korean and english
+  const ko = String((p && p.ko) || (p && p.korean) || '').trim();
+  const en = String((p && p.en) || (p && p.english) || '').trim();
+  return { ko, en };
+}).filter(p => p.en && p.ko) : []
+```
+```93:97:public/src/AudioLearning/audioPattern.js
+wordPairs: Array.isArray(pairs) ? pairs.map(p => {
+  // Only include ko and en fields, explicitly exclude korean and english
+  const ko = String(p.ko || p.korean || '').trim();
+  const en = String(p.en || p.english || '').trim();
+  return { ko, en };
+}).filter(p => p.ko && p.en) : []
+```
+- Updated all word pair normalization locations to create clean objects with only `ko` and `en` fields, removing any `korean` and `english` fields that might have been present
+
+### Edit: 2025-11-24
+- Files: `public/src/AudioLearning/AudioLearningPage.js`
+- Summary: Added automatic Level 3 audio generation when a new conversation is created via "Generate New Conversation" button
+- Rationale: User reported that clicking "Generate New Conversation" didn't generate TTS audio with word pairs. Previously, audio was only generated when clicking "Start" or "Play". Now, when a new conversation is generated and quiz difficulty is Level 3, the Level 3 audio (with word-by-word breakdown) is automatically generated immediately after the conversation is created.
+- Code refs:
+```972:1025:public/src/AudioLearning/AudioLearningPage.js
+setGeneratedSentences(batchWithData);
+setCurrentConversationId(null); // New conversation, not saved yet
+setConversationAudioUrl('');
+// Automatically save the new conversation
+saveConversationSet(batchWithData);
+
+// Automatically generate Level 3 audio if quiz difficulty is Level 3
+const isLevel3 = (Number(quizDifficulty) || 1) === 3;
+if (isLevel3 && batchWithData.length > 0) {
+  // Check if word pairs exist
+  const hasWordPairs = batchWithData.every(item => Array.isArray(item.wordPairs) && item.wordPairs.length > 0);
+  
+  if (hasWordPairs) {
+    // Show loading state
+    setIsGeneratingLevel3Audio(true);
+    setLevel3AudioProgress(0);
+    
+    try {
+      // Format sentences with word pairs for Level 3 audio generation
+      const sentencesWithPairs = batchWithData.map(item => ({
+        english: String(item.english || ''),
+        korean: String(item.korean || ''),
+        wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => {
+          // Only include ko and en fields
+          const ko = String(pair.ko || pair.korean || '').trim();
+          const en = String(pair.en || pair.english || '').trim();
+          return { ko, en };
+        }).filter(p => p.ko && p.en) : []
+      }));
+      
+      setLevel3AudioProgress(50);
+      
+      // Generate Level 3 audio
+      const audioUrl = await generateLevel3Audio(
+        sentencesWithPairs,
+        Math.max(0, Number(quizDelaySec) || 0.5)
+      );
+      
+      setLevel3AudioProgress(100);
+      
+      if (audioUrl) {
+        setConversationAudioUrl(audioUrl);
+        console.log('[handleGenerateNewConversation] Generated Level 3 audio:', audioUrl);
+      } else {
+        console.warn('[handleGenerateNewConversation] Failed to generate Level 3 audio');
+      }
+    } catch (err) {
+      console.error('[handleGenerateNewConversation] Error generating Level 3 audio:', err);
+    } finally {
+      setIsGeneratingLevel3Audio(false);
+      setLevel3AudioProgress(0);
+    }
+  } else {
+    console.warn('[handleGenerateNewConversation] Word pairs missing, skipping Level 3 audio generation');
+  }
+}
+```
+- The audio generation happens automatically after the conversation is saved, so users don't need to click "Start" or "Play" to generate the audio. The audio URL is set immediately, ready for playback.
+
+### Edit: 2025-11-24
+- Files: `public/src/AudioLearning/components/QuizControls.js`, `public/src/AudioLearning/AudioLearningPage.js`
+- Summary: Changed stop button to pause button with pause icon (⏸) when audio is playing
+- Rationale: User requested that the stop button should be replaced with a pause button with an icon. When audio is playing/looping, clicking the button now pauses instead of stopping, and shows a pause icon (⏸) when playing and a play icon (▶️) when paused. This allows users to pause and resume audio without fully stopping it.
+- Code refs:
+```179:214:public/src/AudioLearning/components/QuizControls.js
+<button
+  className="audio-btn"
+  onClick={async () => {
+    const level = Number(quizDifficulty) || 1;
+    if (isQuizLooping) {
+      // Pause instead of stop
+      if (isPaused) {
+        resumeLoop();
+        setIsPaused(false);
+      } else {
+        pauseLoop();
+        setIsPaused(true);
+      }
+    } else {
+      // ... start logic
+    }
+  }}
+  title={isQuizLooping ? (isPaused ? 'Resume' : 'Pause') : ...}
+  aria-label={isQuizLooping ? (isPaused ? 'Resume' : 'Pause') : 'Start'}
+>
+  {isQuizLooping ? (isPaused ? '▶️' : '⏸') : 'Start'}
+</button>
+```
+```1473:1520:public/src/AudioLearning/AudioLearningPage.js
+// If currently playing/looping, pause/resume it
+if (isQuizLooping) {
+  if (isPaused) {
+    // Resume logic
+  } else {
+    // Pause logic
+  }
+  return;
+}
+```
+- The button now shows ⏸ (pause icon) when playing and ▶️ (play icon) when paused, instead of showing "Stop" text. This provides better visual feedback and allows pausing/resuming without fully stopping the audio playback.
+
+### Edit: 2025-11-24
+- Files: `public/src/AudioLearning/utils/sentenceGenerators.js`
+- Summary: Strengthened the prompt for word-by-word translation to explicitly prevent position-based matching and require meaning-based translation
+- Rationale: User reported that word pairs were being generated incorrectly, with Korean words matched to English words by position rather than by meaning (e.g., "오늘" incorrectly matched to "Do" instead of "today"). The AI was matching the first Korean word to the first English word, second to second, etc., instead of translating each Korean word based on its actual meaning.
+- Code refs:
+```28:43:public/src/AudioLearning/utils/sentenceGenerators.js
+const prompt = `Translate this Korean sentence word by word. Return ONLY a JSON array of objects, each with "ko" (Korean word/token) and "en" (English translation).
+
+CRITICAL INSTRUCTIONS:
+- Break the Korean sentence into individual words/tokens
+- Translate each Korean word/token to its MEANING in English, NOT by matching position in the English sentence
+- The English sentence is provided ONLY as context to understand the overall meaning - DO NOT match Korean words to English words by position
+- Each Korean word must be translated based on its actual meaning, regardless of word order differences
+- Keep the array in Korean word order (not English word order)
+- Cover every word/token in the Korean sentence
+- The "ko" field must contain the KOREAN word/token
+- The "en" field must contain the ENGLISH translation/gloss for that specific Korean word's meaning
+
+Korean sentence: ${korean}
+English translation: ${english} (provided for context only - do not match by position)
+
+Example:
+Korean: "오늘 저녁에 시간 있으세요?"
+English: "Do you have time this evening?"
+Correct pairs: [{"ko":"오늘","en":"today"},{"ko":"저녁에","en":"in the evening"},{"ko":"시간","en":"time"},{"ko":"있으세요?","en":"do you have"}]
+Note: "오늘" means "today" (not "Do"), "시간" means "time" (not "have") - translate by meaning, not position!
+
+Return ONLY the JSON array, no other text.`;
+```
+- The updated prompt now explicitly states that the English sentence is for context only and should not be used for position-based matching. It includes a concrete example showing the correct translation (오늘→today, not 오늘→Do) to guide the AI to translate by meaning rather than position.
+
+### Edit: 2025-11-24
+- Files: `public/src/AudioLearning/conversationGenerator.js`
+- Summary: Strengthened the conversation generation prompt to ensure context sentences are used as the PRIMARY topic focus, not just loose inspiration
+- Rationale: User reported that when providing context like "cars", the generated conversation still included "weekend" topics and didn't focus on cars. The prompt was too weak, saying "somewhat inspired by or loosely related" which allowed the AI to ignore the context and default to generic topics. The prompt now explicitly requires the conversation to be DIRECTLY about the topic from the examples and warns against defaulting to generic topics like weekend plans or cafes.
+- Code refs:
+```48:71:public/src/AudioLearning/conversationGenerator.js
+if (contextKorean && contextKorean.trim() && contextEnglish && contextEnglish.trim()) {
+  prompt = `Return ONLY a JSON array of 5 objects like:
+[{"speaker":"A","korean":"...","english":"..."}, ...]
+
+CRITICAL: Create a conversation that is DIRECTLY about the topic, theme, and vocabulary from these example sentences. The conversation MUST focus on the same subject matter as the examples. Do NOT use generic topics like "weekend plans" or "cafe visits" unless those are explicitly mentioned in the examples.
+
+Example sentences that define the conversation topic:
+Korean: ${contextKorean.trim()}
+English: ${contextEnglish.trim()}
+
+Requirements:
+- The conversation MUST be about the same topic/subject as the example sentences
+- Use vocabulary and concepts directly related to the examples - if the example mentions "cars", the conversation should be about cars
+- If the example mentions specific words or topics, those should be the PRIMARY focus of the conversation
+- Do NOT default to generic topics like weekend plans, cafes, or weather unless those are in the examples
+...
+`;
+}
+```
+- The prompt now uses "CRITICAL" and "MUST" language to emphasize that the context should be the primary focus, and explicitly warns against defaulting to generic topics. This should ensure that when a user provides context like "cars", the conversation will actually be about cars, not about weekend plans or cafes.
+
+### Edit: 2025-11-24
+- Files: `backend/logger.js`, `backend/server.js`
+- Summary: Added timestamp logging utility that automatically adds timestamps to all console.log, console.warn, console.error, and console.info messages
+- Rationale: User requested to add timing to the logs. All backend log messages now include timestamps in the format `[HH:MM:SS.mmm]` to help track when events occur and measure performance.
+- Code refs:
+```1:45:backend/logger.js
+// Logger utility that adds timestamps to all log messages
+
+function getTimestamp() {
+  const now = new Date();
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const seconds = String(now.getSeconds()).padStart(2, '0');
+  const milliseconds = String(now.getMilliseconds()).padStart(3, '0');
+  return `${hours}:${minutes}:${seconds}.${milliseconds}`;
+}
+
+function formatLogMessage(args) {
+  const timestamp = getTimestamp();
+  if (args.length === 0) return `[${timestamp}]`;
+  
+  // If first argument is a string, prepend timestamp
+  if (typeof args[0] === 'string') {
+    return [`[${timestamp}] ${args[0]}`, ...args.slice(1)];
+  }
+  
+  // Otherwise, add timestamp as first argument
+  return [`[${timestamp}]`, ...args];
+}
+
+// Override console methods to add timestamps
+const originalLog = console.log;
+const originalWarn = console.warn;
+const originalError = console.error;
+const originalInfo = console.info;
+
+console.log = function(...args) {
+  originalLog.apply(console, formatLogMessage(args));
+};
+
+console.warn = function(...args) {
+  originalWarn.apply(console, formatLogMessage(args));
+};
+
+console.error = function(...args) {
+  originalError.apply(console, formatLogMessage(args));
+};
+
+console.info = function(...args) {
+  originalInfo.apply(console, formatLogMessage(args));
+};
+```
+```1:10:backend/server.js
+require('dotenv').config();
+// Initialize logger to add timestamps to all console logs
+require('./logger');
+const express = require('express');
+...
+```
+- The logger is initialized at the very start of `server.js` before any other modules are loaded, ensuring all backend logs (from chat.js, tts.js, etc.) will include timestamps. Timestamps are in the format `[HH:MM:SS.mmm]` for precise timing.
+
+### Edit: 2025-11-24
+- Files: `backend/chat.js`
+- Summary: Added logging to print the first 5 lines of the POST body prompt when `/api/chat` requests are received.
+- Rationale: User requested visibility into what prompts are being sent to the chat API for debugging purposes. Only the first 5 lines are printed to avoid cluttering logs with very long prompts.
+- Code refs:
+```5:13:backend/chat.js
+  console.log('POST /api/chat request received.'); // Log request
+  try {
+    // Log the first 5 lines of the POST body prompt
+    const { prompt } = req.body;
+    if (prompt && typeof prompt === 'string') {
+      const promptLines = prompt.split('\n').slice(0, 5);
+      console.log('POST /api/chat body (first 5 lines):');
+      promptLines.forEach((line, i) => {
+        console.log(`  ${i + 1}: ${line.substring(0, 200)}${line.length > 200 ? '...' : ''}`);
+      });
+    }
+```
+
+### Edit: 2025-11-24
+- Files: `public/src/AudioLearning/AudioLearningPage.js`, `public/src/AudioLearning/handlers/playCurrentConversationHandler.js`, `public/src/AudioLearning/components/ConversationList.js`
+- Summary: Removed all regular conversation audio generation (`generateConversationAudio` function and `/api/tts/conversation` endpoint usage). Replaced with `generateLevel3AudioForItems` which always generates Level 3 audio (with word-by-word breakdown). The new function automatically generates wordPairs if they don't exist.
+- Rationale: User requested that only Level 3 audio files should be saved, never regular conversation audio files. This ensures all conversations use the full audio pattern (English → Korean → word-by-word pairs → Korean repeat) regardless of quiz difficulty level.
+- Code refs:
+```228:258:public/src/AudioLearning/AudioLearningPage.js
+  // Generate Level 3 audio for a conversation set (always use Level 3, never regular conversation audio)
+  // Defined early so it can be used in playlist navigation functions
+  const generateLevel3AudioForItems = React.useCallback(async (items) => {
+    try {
+      // If items not provided, use generatedSentences
+      const list = Array.isArray(items) ? items : (Array.isArray(generatedSentences) ? generatedSentences : []);
+      if (!list || list.length === 0) return null;
+      
+      // Check if items already have wordPairs
+      const hasWordPairs = list.every(item => Array.isArray(item.wordPairs) && item.wordPairs.length > 0);
+      
+      let sentencesWithPairs;
+      if (hasWordPairs) {
+        // Use existing word pairs
+        sentencesWithPairs = list.map(item => ({
+          english: String(item.english || ''),
+          korean: String(item.korean || ''),
+          wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+            ko: String(pair.ko || pair.korean || '').trim(),
+            en: String(pair.en || pair.english || '').trim()
+          })).filter(p => p.ko && p.en) : []
+        }));
+      } else {
+        // Generate word pairs for all sentences
+        sentencesWithPairs = await prepareLevel3AudioData(
+          list,
+          getWordByWordPairsMemo,
+          () => {} // No progress callback needed here
+        );
+      }
+      
+      // Generate Level 3 audio
+      const audioUrl = await generateLevel3Audio(sentencesWithPairs, Math.max(0, Number(quizDelaySec) || 0.5));
+      if (audioUrl) {
+        setConversationAudioUrl(audioUrl);
+        try { console.log('[Level3Audio] url', audioUrl); } catch (_) {}
+        return audioUrl;
+      }
+      return null;
+    } catch (err) {
+      console.error('generateLevel3AudioForItems error:', err);
+      setConversationAudioUrl('');
+      return null;
+    }
+  }, [generatedSentences, quizDelaySec, getWordByWordPairsMemo, generateLevel3Audio]);
+```
+- All calls to `generateConversationAudio` were replaced with `generateLevel3AudioForItems` in:
+  - `playNextConversation` and `playPreviousConversation` functions (playlist navigation)
+  - Auto-load default conversation `useEffect` hook
+  - `createHandlePlayCurrentConversation` handler (now always uses Level 3 audio for all difficulty levels)
+  - `ConversationList` component (Load button, Create Playlist button, and all audio generation logic)
+- The `/api/tts/conversation` endpoint is no longer called from the frontend. Only `/api/tts/level3` is used.
+

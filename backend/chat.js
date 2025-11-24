@@ -4,7 +4,15 @@ const { convertNumbersInKoreanText } = require('./number_converter');
 async function handleChat(req, res) {
   console.log('POST /api/chat request received.'); // Log request
   try {
+    // Log the first 5 lines of the POST body prompt
     const { prompt } = req.body;
+    if (prompt && typeof prompt === 'string') {
+      const promptLines = prompt.split('\n').slice(0, 5);
+      console.log('POST /api/chat body (first 5 lines):');
+      promptLines.forEach((line, i) => {
+        console.log(`  ${i + 1}: ${line.substring(0, 200)}${line.length > 200 ? '...' : ''}`);
+      });
+    }
     if (!prompt) {
       console.warn('POST /api/chat: Prompt is required.'); // Log warning
       return res.status(400).json({ error: 'Prompt is required' });
@@ -42,8 +50,13 @@ async function handleChat(req, res) {
     const data = await groqResponse.json();
     let outputText = data.choices?.[0]?.message?.content || '';
 
+    // Skip number conversion for word-by-word translation prompts
+    // These prompts ask for JSON with "ko" and "en" fields, and we don't want to convert numbers in English translations
+    const isWordByWordTranslation = /word\s+by\s+word|word-by-word|"ko".*"en"|"en".*"ko"/i.test(prompt);
+    
     // Convert numbers to Korean words if the response contains Korean characters
-    if (outputText && /[가-힣]/.test(outputText)) {
+    // BUT skip for word-by-word translations to preserve English translations
+    if (outputText && /[가-힣]/.test(outputText) && !isWordByWordTranslation) {
       outputText = convertNumbersInKoreanText(outputText, prompt);
     }
 

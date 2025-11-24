@@ -1,4 +1,6 @@
 require('dotenv').config();
+// Initialize logger to add timestamps to all console logs
+require('./logger');
 const express = require('express');
 const https = require('https');
 const http = require('http');
@@ -141,11 +143,66 @@ app.delete('/api/conversations/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+    
+    // Get audioUrl from query parameter (passed from frontend)
+    const audioUrl = req.query.audioUrl || req.body.audioUrl;
+    
+    // Delete the conversation from database
     const deleted = await db.deleteConversation(id, null);
+    
+    // Delete associated audio file if it exists
+    if (audioUrl && typeof audioUrl === 'string') {
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const ttsCacheDir = path.join(__dirname, '..', 'public', 'tts-cache');
+        
+        // Extract filename from URL (e.g., /tts-cache/level3_abc123.mp3 -> level3_abc123.mp3)
+        const urlMatch = audioUrl.match(/\/tts-cache\/(.+)$/);
+        if (urlMatch && urlMatch[1]) {
+          const fileName = urlMatch[1];
+          const filePath = path.join(ttsCacheDir, fileName);
+          
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Deleted audio file: ${fileName}`);
+          }
+        }
+      } catch (fileErr) {
+        console.warn('Error deleting audio file:', fileErr);
+        // Continue even if file deletion fails
+      }
+    }
+    
     res.json({ success: true, deleted });
   } catch (error) {
     console.error('Error deleting conversation:', error);
     res.status(500).json({ error: 'Failed to delete conversation' });
+  }
+});
+
+// Playlist API
+app.get('/api/playlist', async (req, res) => {
+  try {
+    const playlist = await db.getPlaylist();
+    res.json(playlist || { conversationIds: [], currentIndex: 0 });
+  } catch (error) {
+    console.error('Error fetching playlist:', error);
+    res.status(500).json({ error: 'Failed to fetch playlist' });
+  }
+});
+
+app.post('/api/playlist', async (req, res) => {
+  try {
+    const { conversationIds, currentIndex } = req.body || {};
+    if (!Array.isArray(conversationIds)) {
+      return res.status(400).json({ error: 'conversationIds array required' });
+    }
+    await db.savePlaylist(conversationIds, currentIndex || 0);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error saving playlist:', error);
+    res.status(500).json({ error: 'Failed to save playlist' });
   }
 });
 
@@ -505,6 +562,7 @@ app.get('/api/words/stats/summary', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch words summary' });
   }
 });
+
 
 // Model variations cache
 app.get('/api/model-variations', async (req, res) => {

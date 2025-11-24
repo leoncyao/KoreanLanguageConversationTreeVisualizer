@@ -90,10 +90,12 @@ export const prepareLevel3AudioData = async (sentences, getWordPairs, onProgress
       return {
         english: String(sent.english || ''),
         korean: String(sent.korean || ''),
-        wordPairs: Array.isArray(pairs) ? pairs.map(p => ({
-          ko: String(p.ko || p.korean || ''),
-          en: String(p.en || p.english || '')
-        })) : []
+        wordPairs: Array.isArray(pairs) ? pairs.map(p => {
+          // Only include ko and en fields, explicitly exclude korean and english
+          const ko = String(p.ko || p.korean || '').trim();
+          const en = String(p.en || p.english || '').trim();
+          return { ko, en };
+        }).filter(p => p.ko && p.en) : []
       };
     } catch (error) {
       console.warn('Failed to get word pairs for sentence:', error);
@@ -110,10 +112,12 @@ export const prepareLevel3AudioData = async (sentences, getWordPairs, onProgress
       return {
         english: String(sent.english || ''),
         korean: String(sent.korean || ''),
-        wordPairs: new Array(n).fill(0).map((_, i) => ({
-          ko: koParts[i] || '',
-          en: enParts[i] || ''
-        }))
+        wordPairs: new Array(n).fill(0).map((_, i) => {
+          // Only include ko and en fields
+          const ko = String(koParts[i] || '').trim();
+          const en = String(enParts[i] || '').trim();
+          return { ko, en };
+        }).filter(p => p.ko && p.en)
       };
     }
   }));
@@ -130,6 +134,21 @@ export const prepareLevel3AudioData = async (sentences, getWordPairs, onProgress
  */
 export const generateLevel3Audio = async (sentencesWithPairs, delaySeconds = 0.5) => {
   try {
+    // Verify wordPairs are present before sending
+    const hasWordPairs = sentencesWithPairs.some(s => Array.isArray(s.wordPairs) && s.wordPairs.length > 0);
+    const totalWordPairs = sentencesWithPairs.reduce((sum, s) => sum + (Array.isArray(s.wordPairs) ? s.wordPairs.length : 0), 0);
+    console.log('[generateLevel3Audio] Sending to server:', {
+      sentencesCount: sentencesWithPairs.length,
+      hasWordPairs,
+      totalWordPairs,
+      sampleSentence: sentencesWithPairs[0] ? {
+        korean: sentencesWithPairs[0].korean,
+        english: sentencesWithPairs[0].english,
+        wordPairsCount: sentencesWithPairs[0].wordPairs?.length || 0,
+        wordPairs: sentencesWithPairs[0].wordPairs
+      } : null
+    });
+    
     const res = await fetch('/api/tts/level3', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -144,6 +163,7 @@ export const generateLevel3Audio = async (sentencesWithPairs, delaySeconds = 0.5
     }
     
     const data = await res.json().catch(() => null);
+    console.log('[generateLevel3Audio] Server response:', { url: data?.url, cached: data?.cached });
     return (data && data.url) ? data.url : null;
   } catch (error) {
     console.error('generateLevel3Audio error:', error);
