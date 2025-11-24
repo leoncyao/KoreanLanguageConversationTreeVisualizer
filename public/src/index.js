@@ -2,8 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './styles/App.css';
 import App from './App';
-import { initBackgroundAudio } from './backgroundAudio';
-import { setPrefetchQueueSize } from './audioTTS';
+import { initBackgroundAudio } from './AudioLearning/backgroundAudio';
+import { setPrefetchQueueSize } from './AudioLearning/audioTTS';
 
 // Apply persisted theme early to avoid flash; default: light on desktop, dark on mobile
 try {

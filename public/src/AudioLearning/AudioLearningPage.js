@@ -1,7 +1,7 @@
 import React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { api } from './api';
-import './styles/AudioLearningPage.css';
+import { api } from '../api';
+import './AudioLearningPage.css';
 import {
   requestWakeLock,
   releaseWakeLock,
@@ -13,6 +13,11 @@ import {
 import { speakToAudio } from './audioTTS';
 import { generateAndPlayLoop, stopLoop, pauseLoop, resumeLoop } from './audioLoop';
 import { generateVerbPracticeSentence } from './verbPractice';
+import { generateConversationSet } from './conversationGenerator';
+import { prepareLevel3AudioData, generateLevel3Audio, AUDIO_PATTERN } from './audioPattern';
+import { playLearningMode } from './audioLearningMode';
+import { playQuizModeHandsFree } from './audioQuizModeHandsFree';
+import { playQuizModeRecording } from './audioQuizModeRecording';
 
 // Use speakToAudio for background playback support (HTML5 Audio + MediaSession)
 const speak = speakToAudio;
@@ -113,6 +118,8 @@ function AudioLearningPage() {
   const [generatedSetTitle, setGeneratedSetTitle] = React.useState('My Word Set');
   const [generatedWords, setGeneratedWords] = React.useState([]);
   const [generatedSentences, setGeneratedSentences] = React.useState([]); // recent generated sentences for Level 2/3
+  const [currentConversationId, setCurrentConversationId] = React.useState(null); // ID of currently loaded conversation
+  const [showAudioPatternDetails, setShowAudioPatternDetails] = React.useState(false); // Toggle for audio pattern breakdown
   // Saved conversation sets and audio export
   const [savedConversations, setSavedConversations] = React.useState(() => {
     try { const raw = localStorage.getItem('conversation_sets_v1'); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr : []; } catch (_) { return []; }
@@ -138,6 +145,146 @@ function AudioLearningPage() {
   const conversationAudioRef = React.useRef(null);
   const [isGeneratingLevel3Audio, setIsGeneratingLevel3Audio] = React.useState(false);
   const [level3AudioProgress, setLevel3AudioProgress] = React.useState(0);
+  // Playlist state
+  const [playlist, setPlaylist] = React.useState([]); // Array of conversation objects
+  const [playlistIndex, setPlaylistIndex] = React.useState(-1); // Current index in playlist (-1 = no playlist)
+  const [isPlaylistMode, setIsPlaylistMode] = React.useState(false);
+  // Refs for playlist navigation functions to break circular dependency
+  const playNextConversationRef = React.useRef(null);
+  const playPreviousConversationRef = React.useRef(null);
+  const playConversationAudioRef = React.useRef(null);
+  
+  // Generate single audio file for a conversation set (KO→EN order)
+  // Defined early so it can be used in playlist navigation functions
+  const generateConversationAudio = React.useCallback(async (items) => {
+    try {
+      // If items not provided, use generatedSentences
+      const list = Array.isArray(items) ? items : (Array.isArray(generatedSentences) ? generatedSentences : []);
+      if (!list || list.length === 0) return null;
+      const res = await fetch('/api/tts/conversation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: list.map(s => ({ korean: String(s.korean || ''), english: String(s.english || '') })),
+          order: 'en-ko',
+          delaySeconds: Math.max(0, Number(quizDelaySec) || 0)
+        })
+      });
+      if (!res.ok) throw new Error('Failed to generate conversation audio');
+      const data = await res.json().catch(() => null);
+      const url = data && data.url ? data.url : '';
+      if (url) {
+        setConversationAudioUrl(url);
+        try { console.log('[ConversationAudio] url', url); } catch (_) {}
+        return url;
+      }
+      return null;
+    } catch (err) {
+      console.error('generateConversationAudio error:', err);
+      setConversationAudioUrl('');
+      return null;
+    }
+  }, [generatedSentences, quizDelaySec]);
+  
+  // Navigate to next conversation in playlist
+  const playNextConversation = React.useCallback(async () => {
+    if (!isPlaylistMode || playlist.length === 0 || playlistIndex < 0) return;
+    const nextIndex = (playlistIndex + 1) % playlist.length;
+    setPlaylistIndex(nextIndex);
+    const nextConv = playlist[nextIndex];
+    if (!nextConv) return;
+    
+    // Load and play the next conversation
+    setGeneratedSentences(nextConv.items || []);
+    if (nextConv.audioUrl) {
+      setConversationAudioUrl(nextConv.audioUrl);
+      // Stop current audio
+      try {
+        const audio = conversationAudioRef.current;
+        if (audio) {
+          audio.pause();
+          audio.currentTime = 0;
+        }
+      } catch (_) {}
+      // Play next conversation
+      if (playConversationAudioRef.current) {
+        await playConversationAudioRef.current(false, nextConv.audioUrl, nextConv.title);
+      }
+    } else {
+      // Generate audio for next conversation
+      setConversationAudioUrl('');
+      try {
+        const audioUrl = await generateConversationAudio(nextConv.items);
+        if (audioUrl) {
+          setConversationAudioUrl(audioUrl);
+          // Update the saved conversation with the new audio URL
+          const next = savedConversations.map(x => 
+            x.id === nextConv.id ? { ...x, audioUrl } : x
+          );
+          persistConversations(next);
+          if (playConversationAudioRef.current) {
+            await playConversationAudioRef.current(false, audioUrl, nextConv.title);
+          }
+        }
+      } catch (_) {}
+    }
+  }, [isPlaylistMode, playlist, playlistIndex, generateConversationAudio, persistConversations, savedConversations]);
+  
+  // Update ref after function is defined
+  React.useEffect(() => {
+    playNextConversationRef.current = playNextConversation;
+  }, [playNextConversation]);
+  
+  // Navigate to previous conversation in playlist
+  const playPreviousConversation = React.useCallback(async () => {
+    if (!isPlaylistMode || playlist.length === 0 || playlistIndex < 0) return;
+    const prevIndex = playlistIndex === 0 ? playlist.length - 1 : playlistIndex - 1;
+    setPlaylistIndex(prevIndex);
+    const prevConv = playlist[prevIndex];
+    if (!prevConv) return;
+    
+    // Load and play the previous conversation
+    setGeneratedSentences(prevConv.items || []);
+    setCurrentConversationId(prevConv.id || null);
+    if (prevConv.audioUrl) {
+      setConversationAudioUrl(prevConv.audioUrl);
+      // Stop current audio
+      try {
+        const audio = conversationAudioRef.current;
+        if (audio) {
+          audio.pause();
+          audio.currentTime = 0;
+        }
+      } catch (_) {}
+      // Play previous conversation
+      if (playConversationAudioRef.current) {
+        await playConversationAudioRef.current(false, prevConv.audioUrl, prevConv.title);
+      }
+    } else {
+      // Generate audio for previous conversation
+      setConversationAudioUrl('');
+      try {
+        const audioUrl = await generateConversationAudio(prevConv.items);
+        if (audioUrl) {
+          setConversationAudioUrl(audioUrl);
+          // Update the saved conversation with the new audio URL
+          const next = savedConversations.map(x => 
+            x.id === prevConv.id ? { ...x, audioUrl } : x
+          );
+          persistConversations(next);
+          if (playConversationAudioRef.current) {
+            await playConversationAudioRef.current(false, audioUrl, prevConv.title);
+          }
+        }
+      } catch (_) {}
+    }
+  }, [isPlaylistMode, playlist, playlistIndex, generateConversationAudio, persistConversations, savedConversations]);
+  
+  // Update ref after function is defined
+  React.useEffect(() => {
+    playPreviousConversationRef.current = playPreviousConversation;
+  }, [playPreviousConversation]);
+  
   // User input for conversation context
   const [conversationContextKorean, setConversationContextKorean] = React.useState('');
   const [conversationContextEnglish, setConversationContextEnglish] = React.useState('');
@@ -173,38 +320,6 @@ function AudioLearningPage() {
     }
   }, []);
   
-  // Generate single audio file for a conversation set (KO→EN order)
-  // Defined early so it can be used in useEffect
-  const generateConversationAudio = React.useCallback(async (items) => {
-    try {
-      // If items not provided, use generatedSentences
-      const list = Array.isArray(items) ? items : (Array.isArray(generatedSentences) ? generatedSentences : []);
-      if (!list || list.length === 0) return null;
-      const res = await fetch('/api/tts/conversation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: list.map(s => ({ korean: String(s.korean || ''), english: String(s.english || '') })),
-          order: 'en-ko',
-          delaySeconds: Math.max(0, Number(quizDelaySec) || 0)
-        })
-      });
-      if (!res.ok) throw new Error('Failed to generate conversation audio');
-      const data = await res.json().catch(() => null);
-      const url = data && data.url ? data.url : '';
-      if (url) {
-        setConversationAudioUrl(url);
-        try { console.log('[ConversationAudio] url', url); } catch (_) {}
-        return url;
-      }
-      return null;
-    } catch (err) {
-      console.error('generateConversationAudio error:', err);
-      setConversationAudioUrl('');
-      return null;
-    }
-  }, [generatedSentences, quizDelaySec]);
-  
   // Auto-load default conversation (or first one) on startup
   React.useEffect(() => {
     try {
@@ -224,9 +339,20 @@ function AudioLearningPage() {
             : null;
           const convToLoad = defaultConv || savedConversations[0];
           
-          const items = Array.isArray(convToLoad && convToLoad.items) ? convToLoad.items : [];
+            const items = Array.isArray(convToLoad && convToLoad.items) ? convToLoad.items : [];
           if (items.length > 0) {
-            setGeneratedSentences(items);
+            // Preserve wordPairs when loading from saved conversations
+            const itemsWithWordPairs = items.map(item => ({
+              korean: String(item.korean || ''),
+              english: String(item.english || ''),
+              wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+                ko: String(pair.ko || pair.korean || ''),
+                en: String(pair.en || pair.english || '')
+              })) : [],
+              englishWordMapping: item.englishWordMapping || {}
+            }));
+            setGeneratedSentences(itemsWithWordPairs);
+            setCurrentConversationId(convToLoad.id || null);
             
             // Auto-generate audio if not available
             if (convToLoad.audioUrl) {
@@ -774,6 +900,12 @@ function AudioLearningPage() {
     try { const arr = JSON.parse(m[0]); return Array.isArray(arr) ? arr : []; } catch (_) { return []; }
   };
 
+  // Generate a coherent 5-turn conversation (independent of learning words)
+  // Now using the shared conversationGenerator module
+  const generateConversationSetLocal = React.useCallback(async (contextKorean = '', contextEnglish = '') => {
+    return await generateConversationSet(contextKorean, contextEnglish);
+  }, []);
+
   // Fetch one curriculum sentence (EN/KR) with error handling and fallback
   const getCurriculumSentence = React.useCallback(async () => {
     try {
@@ -825,11 +957,7 @@ English: ${english}`;
     const examples = subset.map(w => `${w.korean} (${w.english})`).join(', ');
     const prompt = `Using ONLY some of these Korean learning words: ${examples}\nCreate ONE natural, simple Korean sentence (<= 10 words) that is grammatically correct.\nReturn ONLY JSON: {"korean":"...","english":"...","tokens":[{"ko":"...","en":"..."}, ...]}\ntokens should list the key words in the sentence (3-8 items) with their English.
 
-CRITICAL: For any numbers in the Korean sentence, use Korean words (not Arabic numerals):
-- For time (시, 시간): use Native Korean (하나, 둘, 셋, 넷, 다섯, 여섯, 일곱, 여덟, 아홉, 열, etc.). Example: "9시" should be "아홉 시"
-- For counting objects: use Native Korean (하나, 둘, 셋, etc.)
-- For dates, money, general counting: use Sino-Korean (일, 이, 삼, 사, 오, 육, 칠, 팔, 구, 십, etc.)
-NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Korean words.`;
+`;
     try {
       const res = await api.chat(prompt);
       const data = await res.json();
@@ -847,10 +975,23 @@ NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Kor
   }, [ensureLearningWords]);
 
   // Save current Level 3 conversation set (5 items)
-  const saveConversationSet = React.useCallback(() => {
+  // IMPORTANT: Save the complete sentence objects including wordPairs so they can be restored exactly
+  const saveConversationSet = React.useCallback((itemsToSaveOverride = null) => {
     try {
-      const items = Array.isArray(generatedSentences) ? generatedSentences.slice(0, 5) : [];
+      const items = itemsToSaveOverride || (Array.isArray(generatedSentences) ? generatedSentences.slice(0, 5) : []);
       if (!items || items.length === 0) return;
+      
+      // Ensure we save the complete objects with wordPairs preserved
+      const itemsToSave = items.map(item => ({
+        korean: String(item.korean || ''),
+        english: String(item.english || ''),
+        wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+          ko: String(pair.ko || pair.korean || ''),
+          en: String(pair.en || pair.english || '')
+        })) : [],
+        englishWordMapping: item.englishWordMapping || {}
+      }));
+      
       const id = Date.now().toString(36);
       const ts = new Date();
       const title = `Conversation ${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')} ${String(ts.getHours()).padStart(2,'0')}:${String(ts.getMinutes()).padStart(2,'0')}`;
@@ -858,24 +999,29 @@ NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Kor
       const entry = { 
         id, 
         title, 
-        items, 
+        items: itemsToSave, // Save with wordPairs preserved
         audioUrl: conversationAudioUrl || null,
         createdAt: Date.now() 
       };
       persistConversations([entry, ...savedConversations]);
+      // Automatically set as default conversation
+      setDefaultConversation(id);
       // Save to server (shared DB) and refresh list
+      // Note: Server may not preserve wordPairs, but local storage will
       (async () => {
         try {
-          const serverId = await postServerConversation(title, items);
+          const serverId = await postServerConversation(title, itemsToSave);
           if (serverId) {
             await fetchServerConversations();
           }
         } catch (_) {}
       })();
     } catch (_) {}
-  }, [generatedSentences, conversationAudioUrl, savedConversations, persistConversations, postServerConversation, fetchServerConversations]);
+  }, [generatedSentences, conversationAudioUrl, savedConversations, persistConversations, postServerConversation, fetchServerConversations, setDefaultConversation]);
 
-  const playConversationAudio = React.useCallback((shouldLoop = false, audioUrl = null) => {
+  const [currentConversationTitle, setCurrentConversationTitle] = React.useState('');
+  
+  const playConversationAudio = React.useCallback((shouldLoop = false, audioUrl = null, title = null) => {
     return new Promise((resolve) => {
       try {
         const urlToPlay = audioUrl || conversationAudioUrl;
@@ -913,15 +1059,42 @@ NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Kor
         }, 500);
         audio._speedCheckInterval = speedCheckInterval;
         
+        // Get current conversation title for MediaSession
+        // Priority: passed title > playlist current > saved title state > default
+        const currentConv = isPlaylistMode && playlistIndex >= 0 && playlistIndex < playlist.length
+          ? playlist[playlistIndex]
+          : null;
+        const sessionTitle = title || (currentConv ? currentConv.title : null) || currentConversationTitle || 'Conversation Audio';
+        if (title || currentConv) {
+          setCurrentConversationTitle(sessionTitle);
+        }
+        
         // Set up MediaSession callbacks for Android notification controls
-        updateMediaSession('Conversation Audio', 'Korean Learning', true, {
+        // Update MediaSession metadata with conversation title for Android audio controls
+        updateMediaSession(sessionTitle, 'Korean Learning', true, {
           play: () => {
             try {
               if (audio && audio.paused) {
                 audio.play().catch(() => {});
                 pausedRef.current = false;
                 setIsPaused(false);
-                updateMediaSession('Conversation Audio', 'Korean Learning', true);
+                updateMediaSession(sessionTitle, 'Korean Learning', true, {
+                  play: () => {},
+                  pause: () => {},
+                  stop: () => {},
+                  nexttrack: isPlaylistMode && playlist.length > 1 ? (() => {
+                    console.log('[MediaSession] Next track triggered (play)');
+                    if (playNextConversationRef.current) {
+                      playNextConversationRef.current();
+                    }
+                  }) : undefined,
+                  previoustrack: isPlaylistMode && playlist.length > 1 ? (() => {
+                    console.log('[MediaSession] Previous track triggered (play)');
+                    if (playPreviousConversationRef.current) {
+                      playPreviousConversationRef.current();
+                    }
+                  }) : undefined,
+                });
               }
             } catch (_) {}
           },
@@ -931,7 +1104,23 @@ NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Kor
                 audio.pause();
                 pausedRef.current = true;
                 setIsPaused(true);
-                updateMediaSession('Conversation Audio', 'Korean Learning', false);
+                updateMediaSession(sessionTitle, 'Korean Learning', false, {
+                  play: () => {},
+                  pause: () => {},
+                  stop: () => {},
+                  nexttrack: isPlaylistMode && playlist.length > 1 ? (() => {
+                    console.log('[MediaSession] Next track triggered (play)');
+                    if (playNextConversationRef.current) {
+                      playNextConversationRef.current();
+                    }
+                  }) : undefined,
+                  previoustrack: isPlaylistMode && playlist.length > 1 ? (() => {
+                    console.log('[MediaSession] Previous track triggered (play)');
+                    if (playPreviousConversationRef.current) {
+                      playPreviousConversationRef.current();
+                    }
+                  }) : undefined,
+                });
               }
             } catch (_) {}
           },
@@ -947,7 +1136,19 @@ NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Kor
                 updateMediaSession('Audio Learning', '', false);
               }
             } catch (_) {}
-          }
+          },
+          nexttrack: isPlaylistMode && playlist.length > 1 ? (() => {
+            console.log('[MediaSession] Next track triggered');
+            if (playNextConversationRef.current) {
+              playNextConversationRef.current();
+            }
+          }) : undefined,
+          previoustrack: isPlaylistMode && playlist.length > 1 ? (() => {
+            console.log('[MediaSession] Previous track triggered');
+            if (playPreviousConversationRef.current) {
+              playPreviousConversationRef.current();
+            }
+          }) : undefined,
         });
         const cleanup = () => {
           try {
@@ -1039,7 +1240,12 @@ NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Kor
         }
       } catch (_) { resolve(); }
     });
-  }, [conversationAudioUrl, searchParams]);
+  }, [conversationAudioUrl, searchParams, isPlaylistMode, playlist, playlistIndex, currentConversationTitle]);
+  
+  // Update ref after playConversationAudio is defined
+  React.useEffect(() => {
+    playConversationAudioRef.current = playConversationAudio;
+  }, [playConversationAudio]);
 
   const downloadConversationAudio = React.useCallback(() => {
     try {
@@ -1098,115 +1304,47 @@ Return ONLY the JSON object, no other text.`;
     return {};
   }, []);
 
-  // Generate a coherent 5-turn conversation (independent of learning words)
-  const generateConversationSet = React.useCallback(async (contextKorean = '', contextEnglish = '') => {
-    try {
-      let prompt = `Return ONLY a JSON array of 5 objects like:
-[{"speaker":"A","korean":"...","english":"..."}, ...]
-Requirements:
-- Natural everyday conversation in polite style (요), 7–12 Korean words per turn
-- Each turn must be EXACTLY ONE phrase/sentence per line (no multiple sentences, no periods in the middle)
-- Avoid compound sentences with periods separating clauses; use simple, single-phrase statements
-- Two speakers alternating ("A" then "B" then "A" then "B" then "A" or vice versa)
-- Turns must be contextually related (follow-up questions/answers, short plans, clarifications)
-- Avoid rare terms and proper nouns; use common daily-life topics
-- Provide accurate English translations
-
-CRITICAL: For any numbers in Korean sentences, use Korean words (not Arabic numerals):
-- For time (시, 시간): use Native Korean (하나, 둘, 셋, 넷, 다섯, 여섯, 일곱, 여덟, 아홉, 열, etc.). Example: "9시" should be "아홉 시"
-- For counting objects: use Native Korean (하나, 둘, 셋, etc.)
-- For dates, money, general counting: use Sino-Korean (일, 이, 삼, 사, 오, 육, 칠, 팔, 구, 십, etc.)
-NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Korean words.`;
-      
-      // If user provided context sentences, include them in the prompt
-      if (contextKorean && contextKorean.trim() && contextEnglish && contextEnglish.trim()) {
-        prompt = `Return ONLY a JSON array of 5 objects like:
-[{"speaker":"A","korean":"...","english":"..."}, ...]
-Create a natural 5-turn conversation that is contextually related to these example sentences:
-Korean: ${contextKorean.trim()}
-English: ${contextEnglish.trim()}
-
-Requirements:
-- Natural everyday conversation in polite style (요), 7–12 Korean words per turn
-- Each turn must be EXACTLY ONE phrase/sentence per line (no multiple sentences, no periods in the middle)
-- Avoid compound sentences with periods separating clauses; use simple, single-phrase statements
-- Two speakers alternating ("A" then "B" then "A" then "B" then "A" or vice versa)
-- The conversation should be thematically related to the example sentences above (similar topic, vocabulary, or situation)
-- Turns must be contextually related (follow-up questions/answers, short plans, clarifications)
-- Avoid rare terms and proper nouns; use common daily-life topics
-- Provide accurate English translations
-
-CRITICAL: For any numbers in Korean sentences, use Korean words (not Arabic numerals):
-- For time (시, 시간): use Native Korean (하나, 둘, 셋, 넷, 다섯, 여섯, 일곱, 여덟, 아홉, 열, etc.). Example: "9시" should be "아홉 시"
-- For counting objects: use Native Korean (하나, 둘, 셋, etc.)
-- For dates, money, general counting: use Sino-Korean (일, 이, 삼, 사, 오, 육, 칠, 팔, 구, 십, etc.)
-NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Korean words.`;
-      }
-      
-      const res = await api.chat(prompt);
-      const data = await res.json().catch(() => null);
-      const arr = parseJsonArraySafe(data && (data.response || ''));
-      const norm = (Array.isArray(arr) ? arr : [])
-        .map((x) => {
-          let korean = String((x.korean || x.ko || '')).trim();
-          let english = String((x.english || x.en || '')).trim();
-          
-          // Clean up: remove periods in the middle, keep only the first phrase
-          // Split by period and take the first part (but preserve question/exclamation marks at the end)
-          const koMatch = korean.match(/^([^.]*[.!?]?)/);
-          if (koMatch) {
-            korean = koMatch[1].trim();
-          }
-          const enMatch = english.match(/^([^.]*[.!?]?)/);
-          if (enMatch) {
-            english = enMatch[1].trim();
-          }
-          
-          return {
-            speaker: String((x.speaker || x.role || '')).trim() || '',
-            korean,
-            english,
-          };
-        })
-        .filter((x) => x.korean && x.english)
-        .slice(0, 5);
-      if (norm.length === 5) {
-        return norm.map(({ korean, english }) => ({ korean, english }));
-      }
-    } catch (_) {}
-    // Fallback: simple coherent seed conversation (5 turns)
-    const seeds = [
-      { korean: '오늘 저녁에 시간 있으세요?', english: 'Do you have time this evening?' },
-      { korean: '네, 있어요', english: 'Yes, I do' },
-      { korean: '같이 저녁 먹고 산책할까요?', english: 'Shall we have dinner together and take a walk?' },
-      { korean: '좋아요! 몇 시에 만날까요?', english: 'Sounds good! What time should we meet?' },
-      { korean: '여섯 시 어때요?', english: "How about six?" },
-    ];
-    return seeds;
-  }, [parseJsonArraySafe]);
 
   // Generate a new conversation and load into UI
   const handleGenerateNewConversation = React.useCallback(async () => {
     try {
-      const batch = await generateConversationSet(conversationContextKorean, conversationContextEnglish);
+      const batch = await generateConversationSetLocal(conversationContextKorean, conversationContextEnglish);
       if (Array.isArray(batch) && batch.length > 0) {
-        // Generate English word indices for each sentence
-        const batchWithIndices = await Promise.all(batch.map(async (sent) => {
+        // Generate English word indices and word pairs for each sentence (following audio pattern)
+        const batchWithData = await Promise.all(batch.map(async (sent) => {
           try {
-            const mapping = await generateEnglishWordIndices(sent.korean, sent.english);
+            const [mapping, wordPairs] = await Promise.all([
+              generateEnglishWordIndices(sent.korean, sent.english),
+              getWordByWordPairs(sent.english, sent.korean)
+            ]);
             return {
               ...sent,
-              englishWordMapping: mapping // Store mapping for use in PracticePage
+              englishWordMapping: mapping, // Store mapping for use in PracticePage
+              wordPairs: Array.isArray(wordPairs) ? wordPairs : [] // Store word pairs for audio pattern display
             };
           } catch (_) {
-            return sent; // Return original if mapping fails
+            // Fallback: try to get word pairs separately if combined fails
+            try {
+              const mapping = await generateEnglishWordIndices(sent.korean, sent.english);
+              const wordPairs = await getWordByWordPairs(sent.english, sent.korean);
+              return {
+                ...sent,
+                englishWordMapping: mapping,
+                wordPairs: Array.isArray(wordPairs) ? wordPairs : []
+              };
+            } catch (_) {
+              return sent; // Return original if both fail
+            }
           }
         }));
-        setGeneratedSentences(batchWithIndices);
+        setGeneratedSentences(batchWithData);
+        setCurrentConversationId(null); // New conversation, not saved yet
         setConversationAudioUrl('');
+        // Automatically save the new conversation
+        saveConversationSet(batchWithData);
       }
     } catch (_) {}
-  }, [conversationContextKorean, conversationContextEnglish, generateConversationSet, generateEnglishWordIndices]);
+  }, [conversationContextKorean, conversationContextEnglish, generateConversationSetLocal, generateEnglishWordIndices, getWordByWordPairs, saveConversationSet]);
 
   // Play currently loaded conversation using single MP3 (do not generate a new conversation)
   const handlePlayCurrentConversation = React.useCallback(async () => {
@@ -1229,78 +1367,62 @@ NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Kor
         setIsGeneratingLevel3Audio(true);
         setLevel3AudioProgress(0);
         
-        // Generate word pairs for all sentences
-        setLevel3AudioProgress(10);
-        const sentencesWithPairs = await Promise.all(items.map(async (sent, idx) => {
-          try {
-            const pairs = await getWordByWordPairs(String(sent.english || ''), String(sent.korean || ''));
-            setLevel3AudioProgress(10 + (idx + 1) * 20); // 10-50% for word pairs
-            return {
-              english: String(sent.english || ''),
-              korean: String(sent.korean || ''),
-              wordPairs: Array.isArray(pairs) ? pairs.map(p => ({
-                en: String(p.en || ''),
-                ko: String(p.ko || '')
-              })) : []
-            };
-          } catch (_) {
-            // Fallback: simple split
-            const koParts = String(sent.korean || '').split(/\s+/).filter(Boolean);
-            const enParts = String(sent.english || '').split(/\s+/).filter(Boolean);
-            const n = Math.min(koParts.length, enParts.length);
-            setLevel3AudioProgress(10 + (idx + 1) * 20);
-            return {
-              english: String(sent.english || ''),
-              korean: String(sent.korean || ''),
-              wordPairs: new Array(n).fill(0).map((_, i) => ({ en: enParts[i] || '', ko: koParts[i] || '' }))
-            };
-          }
-        }));
+        // Check if items already have wordPairs saved (from loaded conversation)
+        // If they do, use them; otherwise generate new ones
+        const hasWordPairs = items.every(item => Array.isArray(item.wordPairs) && item.wordPairs.length > 0);
         
-        // Generate Level 3 audio
+        let sentencesWithPairs;
+        if (hasWordPairs) {
+          // Use saved word pairs - format them for prepareLevel3AudioData
+          setLevel3AudioProgress(10);
+          sentencesWithPairs = items.map(item => ({
+            english: String(item.english || ''),
+            korean: String(item.korean || ''),
+            wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+              ko: String(pair.ko || pair.korean || ''),
+              en: String(pair.en || pair.english || '')
+            })) : []
+          }));
+          setLevel3AudioProgress(50);
+        } else {
+          // Generate word pairs for all sentences using audio pattern utility
+          setLevel3AudioProgress(10);
+          sentencesWithPairs = await prepareLevel3AudioData(
+            items,
+            getWordByWordPairs,
+            (progress) => setLevel3AudioProgress(progress)
+          );
+        }
+        
+        // Generate Level 3 audio using audio pattern utility
         setLevel3AudioProgress(60);
-        try {
-          const res = await fetch('/api/tts/level3', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              sentences: sentencesWithPairs,
-              delaySeconds: Math.max(0, Number(quizDelaySec) || 0.5)
-            })
-          });
-          setLevel3AudioProgress(80);
-          if (res.ok) {
-            const data = await res.json().catch(() => null);
-            const audioUrl = data && data.url ? data.url : '';
-            setLevel3AudioProgress(100);
-            if (audioUrl) {
-              setConversationAudioUrl(audioUrl);
-              setIsGeneratingLevel3Audio(false);
-              setLevel3AudioProgress(0);
-              // Play the audio immediately (it will loop automatically)
-              await playConversationAudio(true, audioUrl); // true = loop, pass URL directly
-              // Keep the loop running while playing (audio loops automatically)
-              while (playingRef.current && quizLoopRef.current) {
-                await waitWhilePaused();
-                if (!playingRef.current || !quizLoopRef.current) break;
-                await new Promise(r => setTimeout(r, 500));
-              }
-            } else {
-              setIsGeneratingLevel3Audio(false);
-              setLevel3AudioProgress(0);
-              setError('Failed to generate audio: No audio URL returned');
-            }
-          } else {
-            const errorData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-            setIsGeneratingLevel3Audio(false);
-            setLevel3AudioProgress(0);
-            setError(`Failed to generate audio: ${errorData.error || `HTTP ${res.status}`}`);
-          }
-        } catch (err) {
-          console.error('Failed to generate Level 3 audio:', err);
+        const audioUrl = await generateLevel3Audio(
+          sentencesWithPairs,
+          Math.max(0, Number(quizDelaySec) || 0.5)
+        );
+        setLevel3AudioProgress(100);
+        
+        if (audioUrl) {
+          setConversationAudioUrl(audioUrl);
           setIsGeneratingLevel3Audio(false);
           setLevel3AudioProgress(0);
-          setError(`Failed to generate audio: ${err.message || 'Unknown error'}`);
+          // Find conversation title from saved conversations or use default
+          const currentConv = savedConversations.find(c => c.audioUrl === audioUrl) || 
+                             (isPlaylistMode && playlistIndex >= 0 && playlistIndex < playlist.length ? playlist[playlistIndex] : null);
+          const convTitle = currentConv ? currentConv.title : (currentConversationTitle || 'New Conversation');
+          setCurrentConversationTitle(convTitle);
+          // Play the audio immediately (it will loop automatically)
+          await playConversationAudio(true, audioUrl, convTitle); // true = loop, pass URL directly
+          // Keep the loop running while playing (audio loops automatically)
+          while (playingRef.current && quizLoopRef.current) {
+            await waitWhilePaused();
+            if (!playingRef.current || !quizLoopRef.current) break;
+            await new Promise(r => setTimeout(r, 500));
+          }
+        } else {
+          setIsGeneratingLevel3Audio(false);
+          setLevel3AudioProgress(0);
+          setError('Failed to generate audio: No audio URL returned');
         }
       } else {
         // For other levels, use conversation audio (no loop)
@@ -1309,8 +1431,13 @@ NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Kor
           audioUrl = await generateConversationAudio(items);
         }
         if (audioUrl) {
+          // Find conversation title from saved conversations or use default
+          const currentConv = savedConversations.find(c => c.audioUrl === audioUrl) || 
+                             (isPlaylistMode && playlistIndex >= 0 && playlistIndex < playlist.length ? playlist[playlistIndex] : null);
+          const convTitle = currentConv ? currentConv.title : (currentConversationTitle || 'New Conversation');
+          setCurrentConversationTitle(convTitle);
           // Play immediately with the generated URL (don't wait for state update)
-          await playConversationAudio(false, audioUrl); // false = no loop
+          await playConversationAudio(false, audioUrl, convTitle); // false = no loop
           await new Promise(r => setTimeout(r, 200));
         } else {
           setError('Failed to generate conversation audio');
@@ -1327,7 +1454,7 @@ NEVER use Arabic numerals (1, 2, 3, etc.) in Korean text - always convert to Kor
         stopKeepAlive();
       }
     }
-  }, [generatedSentences, conversationAudioUrl, generateConversationAudio, playConversationAudio, quizDifficulty, quizDelaySec, getWordByWordPairs, waitWhilePaused, generateConversationSet]);
+  }, [generatedSentences, conversationAudioUrl, generateConversationAudio, playConversationAudio, quizDifficulty, quizDelaySec, getWordByWordPairs, waitWhilePaused, generateConversationSetLocal, savedConversations, isPlaylistMode, playlist, playlistIndex, currentConversationTitle]);
 
   const generateQuizSentence = React.useCallback(async (difficulty) => {
     if (difficulty === 1) return null; // single word handled separately
@@ -1399,82 +1526,22 @@ Provide an accurate English translation.`;
   }, [parseJsonObject]);
 
   const handlePlayLearningMode = React.useCallback(async () => {
-    setIsLearningPlaying(true);
-    playingRef.current = true;
-    // Request wake lock for background playback
-    await requestWakeLock();
-    // Start keep-alive to prevent audio suspension
-    startKeepAlive();
-    // Wire up MediaSession callbacks for background control
-    updateMediaSession('Learning Mode', 'Korean Learning', true, {
-      play: () => {
-        // Resume playback
-        pausedRef.current = false;
-        setIsLearningPlaying(true);
-      },
-      pause: () => {
-        // Pause playback but keep loop alive
-        pausedRef.current = true;
-        setIsLearningPlaying(false);
-        try { const s = window.speechSynthesis; if (s) s.cancel(); } catch (_) {}
-      },
-      stop: () => {
-        // Fully stop
-        pausedRef.current = false;
-        playingRef.current = false;
-        setIsLearningPlaying(false);
-        try { const s = window.speechSynthesis; if (s) s.cancel(); } catch (_) {}
-      }
+    await playLearningMode({
+      ensureLearningWords,
+      generateLearningSentence,
+      waitWhilePaused,
+      speak,
+      updateMediaSession,
+      requestWakeLock,
+      releaseWakeLock,
+      startKeepAlive,
+      stopKeepAlive,
+      setIsLearningPlaying,
+      pausedRef,
+      playingRef,
+      quizLoopRef
     });
-    try {
-      await ensureLearningWords();
-      while (playingRef.current) {
-        await waitWhilePaused(); if (!playingRef.current) break;
-        const s = await generateLearningSentence();
-        if (!s) break;
-        // 1. English sentence first
-        updateMediaSession(s.english, 'English', true);
-        await waitWhilePaused(); if (!playingRef.current) break;
-        await speak(s.english, 'en-US', 1.0);
-        if (!playingRef.current) break;
-        // 2. Korean sentence second
-        updateMediaSession(s.korean, 'Korean', true);
-        await waitWhilePaused(); if (!playingRef.current) break;
-        await speak(s.korean, 'ko-KR', 1.0);
-        if (!playingRef.current) break;
-        // 3. Each Korean word and its translation
-        const toks = Array.isArray(s.tokens) ? s.tokens : [];
-        for (const t of toks) {
-          if (!playingRef.current) break;
-          updateMediaSession(String(t.ko || ''), 'Korean', true);
-          await waitWhilePaused(); if (!playingRef.current) break;
-          await speak(String(t.ko || ''), 'ko-KR', 1.0);
-          if (!playingRef.current) break;
-          updateMediaSession(String(t.en || ''), 'English', true);
-          await waitWhilePaused(); if (!playingRef.current) break;
-          await speak(String(t.en || ''), 'en-US', 1.0);
-          await new Promise(r => setTimeout(r, 150));
-        }
-        if (!playingRef.current) break;
-        // 4. Whole Korean sentence again
-        updateMediaSession(s.korean, 'Korean', true);
-        await waitWhilePaused(); if (!playingRef.current) break;
-        await speak(s.korean, 'ko-KR', 1.0);
-        await new Promise(r => setTimeout(r, 400));
-      }
-    } finally {
-      setIsLearningPlaying(false);
-      playingRef.current = false;
-      updateMediaSession('Audio Learning', '', false);
-      try { const synth = window.speechSynthesis; if (synth) synth.cancel(); } catch (_) {}
-      // Release wake lock when done
-      await releaseWakeLock();
-      // Stop keep-alive if quiz mode is not running
-      if (!quizLoopRef.current) {
-        stopKeepAlive();
-      }
-    }
-  }, [ensureLearningWords, generateLearningSentence]);
+  }, [ensureLearningWords, generateLearningSentence, waitWhilePaused, speak, updateMediaSession, requestWakeLock, releaseWakeLock, startKeepAlive, stopKeepAlive]);
 
   const stopAll = React.useCallback(async () => {
     playingRef.current = false;
@@ -1896,7 +1963,7 @@ Provide an accurate English translation.`;
           }
         } else {
           // Level 3: Generate one audio file for all 5 sentences with word-by-word breakdown
-          const batch3 = await generateConversationSet();
+          const batch3 = await generateConversationSetLocal();
           if (batch3.length === 0) {
             // Fallback: generate one sentence if batch failed
             const sent = await generateQuizSentence(3);
@@ -1911,78 +1978,62 @@ Provide an accurate English translation.`;
             setIsGeneratingLevel3Audio(true);
             setLevel3AudioProgress(0);
             
-            // Generate word pairs for all sentences
-            setLevel3AudioProgress(10);
-            const sentencesWithPairs = await Promise.all(batch3.map(async (sent, idx) => {
-              try {
-                const pairs = await getWordByWordPairs(String(sent.english || ''), String(sent.korean || ''));
-                setLevel3AudioProgress(10 + (idx + 1) * 20); // 10-50% for word pairs
-                return {
-                  english: String(sent.english || ''),
-                  korean: String(sent.korean || ''),
-                  wordPairs: Array.isArray(pairs) ? pairs.map(p => ({
-                    en: String(p.en || ''),
-                    ko: String(p.ko || '')
-                  })) : []
-                };
-              } catch (_) {
-                // Fallback: simple split
-                const koParts = String(sent.korean || '').split(/\s+/).filter(Boolean);
-                const enParts = String(sent.english || '').split(/\s+/).filter(Boolean);
-                const n = Math.min(koParts.length, enParts.length);
-                setLevel3AudioProgress(10 + (idx + 1) * 20);
-                return {
-                  english: String(sent.english || ''),
-                  korean: String(sent.korean || ''),
-                  wordPairs: new Array(n).fill(0).map((_, i) => ({ en: enParts[i] || '', ko: koParts[i] || '' }))
-                };
-              }
-            }));
+            // Check if batch3 already has wordPairs saved (from loaded conversation)
+            // If they do, use them; otherwise generate new ones
+            const hasWordPairs = batch3.every(item => Array.isArray(item.wordPairs) && item.wordPairs.length > 0);
             
-            // Generate single audio file for all sentences
+            let sentencesWithPairs;
+            if (hasWordPairs) {
+              // Use saved word pairs - format them for prepareLevel3AudioData
+              setLevel3AudioProgress(10);
+              sentencesWithPairs = batch3.map(item => ({
+                english: String(item.english || ''),
+                korean: String(item.korean || ''),
+                wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+                  ko: String(pair.ko || pair.korean || ''),
+                  en: String(pair.en || pair.english || '')
+                })) : []
+              }));
+              setLevel3AudioProgress(50);
+            } else {
+              // Generate word pairs for all sentences using audio pattern utility
+              setLevel3AudioProgress(10);
+              sentencesWithPairs = await prepareLevel3AudioData(
+                batch3,
+                getWordByWordPairs,
+                (progress) => setLevel3AudioProgress(progress)
+              );
+            }
+            
+            // Generate Level 3 audio using audio pattern utility
             setLevel3AudioProgress(60);
-            try {
-              const res = await fetch('/api/tts/level3', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  sentences: sentencesWithPairs,
-                  delaySeconds: Math.max(0, Number(quizDelaySec) || 0.5)
-                })
-              });
-              setLevel3AudioProgress(80);
-              if (res.ok) {
-                const data = await res.json().catch(() => null);
-                const audioUrl = data && data.url ? data.url : '';
-                setLevel3AudioProgress(100);
-                if (audioUrl) {
-                  setConversationAudioUrl(audioUrl);
-                  setIsGeneratingLevel3Audio(false);
-                  setLevel3AudioProgress(0);
-                  // Play the audio immediately (it will loop automatically)
-                  await playConversationAudio(true, audioUrl); // true = loop, pass URL directly
-                  // Keep the loop running while playing (audio loops automatically)
-                  while (playingRef.current && quizLoopRef.current) {
-                    await waitWhilePaused();
-                    if (!playingRef.current || !quizLoopRef.current) break;
-                    await new Promise(r => setTimeout(r, 500));
-                  }
-                } else {
-                  setIsGeneratingLevel3Audio(false);
-                  setLevel3AudioProgress(0);
-                  setError('Failed to generate audio: No audio URL returned');
-                }
-              } else {
-                const errorData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-                setIsGeneratingLevel3Audio(false);
-                setLevel3AudioProgress(0);
-                setError(`Failed to generate audio: ${errorData.error || `HTTP ${res.status}`}`);
-              }
-            } catch (err) {
-              console.error('Failed to generate Level 3 audio:', err);
+            const audioUrl = await generateLevel3Audio(
+              sentencesWithPairs,
+              Math.max(0, Number(quizDelaySec) || 0.5)
+            );
+            setLevel3AudioProgress(100);
+            
+            if (audioUrl) {
+              setConversationAudioUrl(audioUrl);
               setIsGeneratingLevel3Audio(false);
               setLevel3AudioProgress(0);
-              setError(`Failed to generate audio: ${err.message || 'Unknown error'}`);
+              // Find conversation title from saved conversations or use default
+              const currentConv = savedConversations.find(c => c.audioUrl === audioUrl) || 
+                                 (isPlaylistMode && playlistIndex >= 0 && playlistIndex < playlist.length ? playlist[playlistIndex] : null);
+              const convTitle = currentConv ? currentConv.title : (currentConversationTitle || 'New Conversation');
+              setCurrentConversationTitle(convTitle);
+              // Play the audio immediately (it will loop automatically)
+              await playConversationAudio(true, audioUrl, convTitle); // true = loop, pass URL directly
+              // Keep the loop running while playing (audio loops automatically)
+              while (playingRef.current && quizLoopRef.current) {
+                await waitWhilePaused();
+                if (!playingRef.current || !quizLoopRef.current) break;
+                await new Promise(r => setTimeout(r, 500));
+              }
+            } else {
+              setIsGeneratingLevel3Audio(false);
+              setLevel3AudioProgress(0);
+              setError('Failed to generate audio: No audio URL returned');
             }
           }
         }
@@ -2123,7 +2174,7 @@ Provide an accurate English translation.`;
         stopKeepAlive();
       }
     }
-  }, [ensureLearningWords, quizMode, startMicRecording, stopMicRecording, playRecorded, quizDelaySec, quizRecordDurationSec, startSpeechRecognition, stopSpeechRecognition, recognizedText, pushHistory, quizDifficulty, generateQuizSentence, waitWhilePaused, setIndex, applyPronounAndTenseIfVerb, getWordByWordPairs, generateConversationSet]);
+  }, [ensureLearningWords, quizMode, startMicRecording, stopMicRecording, playRecorded, quizDelaySec, quizRecordDurationSec, startSpeechRecognition, stopSpeechRecognition, recognizedText, pushHistory, quizDifficulty, generateQuizSentence, waitWhilePaused, setIndex, applyPronounAndTenseIfVerb, getWordByWordPairs, generateConversationSetLocal]);
 
   // Function to actually start autoplay (called from button click or auto-trigger)
   const startAutoplayAudio = React.useCallback(async () => {
@@ -2161,7 +2212,12 @@ Provide an accurate English translation.`;
         pausedRef.current = false;
         setIsPaused(false);
         quizLoopRef.current = true;
-        await playConversationAudio(true, conversationAudioUrl);
+        // Find conversation title from saved conversations
+        const currentConv = savedConversations.find(c => c.audioUrl === conversationAudioUrl) || 
+                           (isPlaylistMode && playlistIndex >= 0 && playlistIndex < playlist.length ? playlist[playlistIndex] : null);
+        const convTitle = currentConv ? currentConv.title : (currentConversationTitle || 'Conversation Audio');
+        setCurrentConversationTitle(convTitle);
+        await playConversationAudio(true, conversationAudioUrl, convTitle);
         while (playingRef.current && quizLoopRef.current) {
           await waitWhilePaused();
           if (!playingRef.current || !quizLoopRef.current) break;
@@ -2409,7 +2465,12 @@ Provide an accurate English translation.`;
                           quizLoopRef.current = true;
                           startKeepAlive();
                           try {
-                            await playConversationAudio(true, conversationAudioUrl); // true = loop, pass URL directly
+                            // Find conversation title from saved conversations
+                            const currentConv = savedConversations.find(c => c.audioUrl === conversationAudioUrl) || 
+                                               (isPlaylistMode && playlistIndex >= 0 && playlistIndex < playlist.length ? playlist[playlistIndex] : null);
+                            const convTitle = currentConv ? currentConv.title : (currentConversationTitle || 'Conversation Audio');
+                            setCurrentConversationTitle(convTitle);
+                            await playConversationAudio(true, conversationAudioUrl, convTitle); // true = loop, pass URL directly
                             // Keep the loop running while playing (audio loops automatically)
                             while (playingRef.current && quizLoopRef.current) {
                               await waitWhilePaused();
@@ -2556,21 +2617,215 @@ Provide an accurate English translation.`;
               )}
               {(Number(quizDifficulty) || 1) >= 2 && generatedSentences && generatedSentences.length > 0 && (
                 <div style={{ marginTop: 8 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Generated Sentences (Level >= 2)</div>
-                  <div style={{ display: 'grid', gap: 4 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span>Generated Sentences (Level >= 2)</span>
+                    {currentConversationId && (
+                      <span style={{ fontSize: 11, color: '#666', fontWeight: 400 }}>
+                        ID: {currentConversationId}
+                      </span>
+                    )}
+                    <button
+                      className="audio-mini-btn"
+                      onClick={() => setShowAudioPatternDetails(!showAudioPatternDetails)}
+                      style={{ marginLeft: 'auto', fontSize: 11 }}
+                      title={showAudioPatternDetails ? 'Hide audio pattern details' : 'Show audio pattern details'}
+                    >
+                      {showAudioPatternDetails ? 'Hide Pattern' : 'Show Pattern'}
+                    </button>
+                  </div>
+                  <div style={{ display: 'grid', gap: 12 }}>
                     {generatedSentences.map((s, i) => (
-                      <div key={i} style={{ display: 'grid', gap: 2 }}>
-                        <div className="audio-ko" style={{ padding: '6px 8px', border: '1px solid #eee', borderRadius: 6 }}>{s.korean}</div>
-                        <div className="audio-en" style={{ padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6 }}>{s.english}</div>
+                      <div key={i} style={{ 
+                        padding: '16px', 
+                        border: '2px solid #d1d5db', 
+                        borderRadius: 10, 
+                        background: '#ffffff',
+                        display: 'grid',
+                        gap: 12
+                      }}>
+                        {/* Sentence number */}
+                        <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', letterSpacing: '0.5px' }}>
+                          Sentence {i + 1}
+                        </div>
+                        
+                        {/* Full sentences - larger and more prominent */}
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Korean</div>
+                            <div className="audio-ko" style={{ 
+                              padding: '14px 16px', 
+                              border: '2px solid #3b82f6', 
+                              borderRadius: 8,
+                              background: '#eff6ff',
+                              fontSize: 'clamp(18px, 4.5vw, 20px)',
+                              lineHeight: 1.8,
+                              wordBreak: 'keep-all',
+                              fontWeight: 600,
+                              color: '#1e40af'
+                            }}>{s.korean}</div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }}>English</div>
+                            <div className="audio-en" style={{ 
+                              padding: '14px 16px', 
+                              border: '2px solid #10b981', 
+                              borderRadius: 8,
+                              background: '#f0fdf4',
+                              fontSize: 'clamp(16px, 4vw, 18px)',
+                              lineHeight: 1.8,
+                              wordBreak: 'break-word',
+                              fontWeight: 500,
+                              color: '#065f46'
+                            }}>{s.english}</div>
+                          </div>
+                        </div>
+                        
+                        {/* Word-by-word breakdown - clear table-like structure */}
+                        {Array.isArray(s.wordPairs) && s.wordPairs.length > 0 && (
+                          <div style={{ 
+                            padding: '12px 16px', 
+                            background: '#f9fafb', 
+                            border: '2px solid #e5e7eb', 
+                            borderRadius: 8
+                          }}>
+                            <div style={{ fontWeight: 700, marginBottom: 12, color: '#111827', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                              Word-by-Word Breakdown
+                            </div>
+                            <div style={{ 
+                              display: 'grid', 
+                              gap: 8
+                            }}>
+                              {s.wordPairs.map((pair, idx) => (
+                                <div key={idx} style={{ 
+                                  display: 'grid',
+                                  gridTemplateColumns: 'auto 1fr',
+                                  gap: 12,
+                                  alignItems: 'center',
+                                  padding: '10px 12px',
+                                  background: '#ffffff',
+                                  border: '1px solid #d1d5db',
+                                  borderRadius: 6,
+                                  transition: 'all 0.2s'
+                                }}>
+                                  <div style={{ 
+                                    minWidth: '40px',
+                                    textAlign: 'center',
+                                    fontSize: 11,
+                                    fontWeight: 600,
+                                    color: '#6b7280',
+                                    background: '#f3f4f6',
+                                    padding: '4px 8px',
+                                    borderRadius: 4
+                                  }}>
+                                    {idx + 1}
+                                  </div>
+                                  <div style={{ 
+                                    display: 'flex', 
+                                    alignItems: 'center', 
+                                    gap: 12,
+                                    flexWrap: 'wrap'
+                                  }}>
+                                    <span className="audio-ko" style={{ 
+                                      fontWeight: 700, 
+                                      fontSize: 'clamp(16px, 4vw, 18px)',
+                                      color: '#1e40af',
+                                      padding: '6px 10px',
+                                      background: '#eff6ff',
+                                      borderRadius: 5,
+                                      border: '1px solid #93c5fd'
+                                    }}>{pair.ko || pair.korean || ''}</span>
+                                    <span style={{ 
+                                      color: '#9ca3af', 
+                                      fontSize: 14,
+                                      fontWeight: 600
+                                    }}>→</span>
+                                    <span className="audio-en" style={{ 
+                                      color: '#065f46', 
+                                      fontSize: 'clamp(14px, 3.5vw, 16px)',
+                                      fontWeight: 500,
+                                      padding: '6px 10px',
+                                      background: '#f0fdf4',
+                                      borderRadius: 5,
+                                      border: '1px solid #86efac'
+                                    }}>{pair.en || pair.english || ''}</span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
                   {/* Conversation save/export controls (Level 3) */}
                   <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                       <button className="audio-btn" onClick={saveConversationSet} title="Save this 5-sentence conversation">
                         Save Conversation
                       </button>
+                      {currentConversationId && (
+                        <button 
+                          className="audio-btn" 
+                          onClick={async () => {
+                            if (!confirm('Delete the currently loaded conversation? This will clear it from the screen.')) return;
+                            
+                            // Find the conversation by ID
+                            const currentConv = savedConversations.find(c => c.id === currentConversationId);
+                            
+                            if (currentConv) {
+                              // Delete from saved conversations
+                              try {
+                                // Try to delete from server if it has a numeric ID (server-saved)
+                                const serverId = typeof currentConv.id === 'number' || /^\d+$/.test(String(currentConv.id)) ? parseInt(currentConv.id, 10) : null;
+                                if (serverId && Number.isFinite(serverId)) {
+                                  try {
+                                    await api.deleteConversation(serverId);
+                                  } catch (err) {
+                                    console.warn('Failed to delete from server:', err);
+                                  }
+                                }
+                                // Delete from local storage
+                                const next = savedConversations.filter(x => x.id !== currentConversationId);
+                                persistConversations(next);
+                                // Clear default if this was the default conversation
+                                if (currentConversationId === defaultConversationId) {
+                                  setDefaultConversation(null);
+                                }
+                                // Refresh from server to sync
+                                try {
+                                  await fetchServerConversations();
+                                } catch (_) {}
+                              } catch (err) {
+                                console.error('Error deleting conversation:', err);
+                              }
+                            }
+                            
+                            // Clear the loaded conversation
+                            setGeneratedSentences([]);
+                            setCurrentConversationId(null);
+                            setConversationAudioUrl('');
+                            setCurrentConversationTitle('');
+                            
+                            // Stop any playing audio
+                            try {
+                              const audio = conversationAudioRef.current;
+                              if (audio) {
+                                audio.pause();
+                                audio.currentTime = 0;
+                              }
+                            } catch (_) {}
+                            
+                            // Stop quiz loop if running
+                            if (isQuizLooping) {
+                              stopAll();
+                            }
+                          }}
+                          title={`Delete conversation ID: ${currentConversationId}`}
+                          style={{ background: '#f44336', color: 'white' }}
+                        >
+                          Delete Current Conversation
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2638,8 +2893,81 @@ Provide an accurate English translation.`;
           )}
           <div className="audio-card" style={{ marginTop: 12 }}>
             <h2 className="audio-section-title">Saved Conversations</h2>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
               <button className="audio-btn" onClick={fetchServerConversations}>Refresh from Server</button>
+              <button className="audio-btn" onClick={async () => {
+                if (savedConversations && savedConversations.length > 0) {
+                  setPlaylist(savedConversations);
+                  setPlaylistIndex(0);
+                  setIsPlaylistMode(true);
+                  
+                  // Pre-generate audio for all conversations that don't have it
+                  const conversationsToUpdate = [];
+                  for (const conv of savedConversations) {
+                    if (!conv.audioUrl && conv.items && conv.items.length > 0) {
+                      try {
+                        const audioUrl = await generateConversationAudio(conv.items);
+                        if (audioUrl) {
+                          conversationsToUpdate.push({ ...conv, audioUrl });
+                        } else {
+                          conversationsToUpdate.push(conv);
+                        }
+                      } catch (_) {
+                        conversationsToUpdate.push(conv);
+                      }
+                    } else {
+                      conversationsToUpdate.push(conv);
+                    }
+                  }
+                  
+                  // Update saved conversations with generated audio URLs
+                  if (conversationsToUpdate.some((c, i) => c.audioUrl !== savedConversations[i]?.audioUrl)) {
+                    persistConversations(conversationsToUpdate);
+                    setPlaylist(conversationsToUpdate);
+                  }
+                  
+                  // Load and play first conversation
+                  const first = conversationsToUpdate[0] || savedConversations[0];
+                  setGeneratedSentences(first.items || []);
+                  setCurrentConversationId(first.id || null);
+                  setCurrentConversationTitle(first.title);
+                  if (first.audioUrl) {
+                    setConversationAudioUrl(first.audioUrl);
+                    if (playConversationAudioRef.current) {
+                      await playConversationAudioRef.current(false, first.audioUrl, first.title);
+                    }
+                  } else {
+                    setConversationAudioUrl('');
+                    // Try to generate one more time if still missing
+                    try {
+                      const audioUrl = await generateConversationAudio(first.items);
+                      if (audioUrl) {
+                        setConversationAudioUrl(audioUrl);
+                        const updated = conversationsToUpdate.map(x => 
+                          x.id === first.id ? { ...x, audioUrl } : x
+                        );
+                        persistConversations(updated);
+                        setPlaylist(updated);
+                        if (playConversationAudioRef.current) {
+                          await playConversationAudioRef.current(false, audioUrl, first.title);
+                        }
+                      }
+                    } catch (_) {}
+                  }
+                }
+              }}>Create Playlist</button>
+              {isPlaylistMode && playlist.length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#666' }}>
+                  <span>Playlist: {playlistIndex + 1} / {playlist.length}</span>
+                  <button className="audio-mini-btn" onClick={playPreviousConversation} disabled={playlist.length <= 1}>⏮</button>
+                  <button className="audio-mini-btn" onClick={playNextConversation} disabled={playlist.length <= 1}>⏭</button>
+                  <button className="audio-mini-btn" onClick={() => {
+                    setIsPlaylistMode(false);
+                    setPlaylist([]);
+                    setPlaylistIndex(-1);
+                  }}>Stop Playlist</button>
+                </div>
+              )}
             </div>
             <div style={{ display: 'grid', gap: 8 }}>
               {(!savedConversations || savedConversations.length === 0) && (
@@ -2651,10 +2979,36 @@ Provide an accurate English translation.`;
                     {c.id === defaultConversationId && <span style={{ fontSize: '1.2em' }}>★</span>}
                     {c.title}
                   </div>
-                  <div style={{ flex: 1, fontSize: 12, color: '#666' }}>{(c.items||[]).length} lines</div>
+                  <div style={{ flex: 1, fontSize: 11, color: '#666' }}>ID: {c.id || 'N/A'}</div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <button className="audio-mini-btn" onClick={async () => {
-                      setGeneratedSentences(c.items || []);
+                      // Load the conversation items, preserving wordPairs if they exist
+                      const itemsToLoad = Array.isArray(c.items) ? c.items.map(item => ({
+                        korean: String(item.korean || ''),
+                        english: String(item.english || ''),
+                        wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+                          ko: String(pair.ko || pair.korean || ''),
+                          en: String(pair.en || pair.english || '')
+                        })) : [],
+                        englishWordMapping: item.englishWordMapping || {}
+                      })) : [];
+                      
+                      setGeneratedSentences(itemsToLoad);
+                      setCurrentConversationId(c.id || null);
+                      setCurrentConversationTitle(c.title);
+                      // Auto-create playlist from all conversations if not already in playlist mode
+                      if (!isPlaylistMode && savedConversations && savedConversations.length > 1) {
+                        setPlaylist(savedConversations);
+                        const idx = savedConversations.findIndex(conv => conv.id === c.id);
+                        setPlaylistIndex(idx >= 0 ? idx : 0);
+                        setIsPlaylistMode(true);
+                      } else if (isPlaylistMode) {
+                        // Update playlist index if already in playlist mode
+                        const idx = playlist.findIndex(conv => conv.id === c.id);
+                        if (idx >= 0) {
+                          setPlaylistIndex(idx);
+                        }
+                      }
                       // Auto-generate audio if not available
                       if (c.audioUrl) {
                         setConversationAudioUrl(c.audioUrl);
@@ -2669,6 +3023,7 @@ Provide an accurate English translation.`;
                               x.id === c.id ? { ...x, audioUrl } : x
                             );
                             persistConversations(next);
+                            setConversationAudioUrl(audioUrl);
                           }
                         } catch (_) {}
                       }

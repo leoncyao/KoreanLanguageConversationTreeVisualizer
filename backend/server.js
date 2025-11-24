@@ -254,6 +254,16 @@ app.get('/api/mix/scores', async (req, res) => {
   }
 });
 
+app.post('/api/mix/reset', async (req, res) => {
+  try {
+    const updated = await db.resetMixState();
+    res.json({ success: true, updated });
+  } catch (error) {
+    console.error('Error resetting mix state:', error);
+    res.status(500).json({ error: 'Failed to reset mix state' });
+  }
+});
+
 // Lightweight health check
 app.get('/api/health', (req, res) => {
   res.json({
@@ -647,6 +657,54 @@ app.put('/api/curriculum-phrases/:id', handleUpdateCurriculumPhrase);
 app.delete('/api/curriculum-phrases/:id', handleDeleteCurriculumPhrase);
 app.post('/api/curriculum-phrases/:id/correct', handleUpdateCurriculumPhraseStats);
 app.post('/api/curriculum-phrases/:id/archive', handleArchiveCurriculumPhrase);
+
+// Explanation API endpoints
+app.get('/api/explanations/:phraseId/:phraseType', async (req, res) => {
+  try {
+    const { phraseId, phraseType } = req.params;
+    const explanation = await db.getPhraseExplanation(phraseId, phraseType);
+    if (explanation) {
+      res.json({ explanation });
+    } else {
+      res.status(404).json({ error: 'Explanation not found' });
+    }
+  } catch (error) {
+    console.error('Error fetching explanation:', error);
+    res.status(500).json({ error: 'Failed to fetch explanation' });
+  }
+});
+
+app.post('/api/explanations', async (req, res) => {
+  try {
+    const { phraseId, phraseType, koreanText, englishText, explanation } = req.body || {};
+    if (!phraseId || !phraseType || !koreanText || !englishText || !explanation) {
+      return res.status(400).json({ error: 'phraseId, phraseType, koreanText, englishText, and explanation are required' });
+    }
+    await db.savePhraseExplanation(phraseId, phraseType, koreanText, englishText, explanation);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error saving explanation:', error);
+    res.status(500).json({ error: 'Failed to save explanation' });
+  }
+});
+
+app.get('/api/explanations/by-text', async (req, res) => {
+  try {
+    const { koreanText, englishText } = req.query || {};
+    if (!koreanText || !englishText) {
+      return res.status(400).json({ error: 'koreanText and englishText are required' });
+    }
+    const explanation = await db.getPhraseExplanationByText(koreanText, englishText);
+    if (explanation) {
+      res.json({ explanation });
+    } else {
+      res.status(404).json({ error: 'Explanation not found' });
+    }
+  } catch (error) {
+    console.error('Error fetching explanation by text:', error);
+    res.status(500).json({ error: 'Failed to fetch explanation' });
+  }
+});
 
 // Initialize database and start server
 async function startServer() {

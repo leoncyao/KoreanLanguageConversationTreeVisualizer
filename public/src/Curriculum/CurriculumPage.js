@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { api } from './api';
-import './styles/HomePage.css';
+import { api } from '../api';
+import '../Home/HomePage.css';
 
 const escapeHtml = (str) => {
   if (!str) return '';

@@ -1,6 +1,6 @@
 import React from 'react';
-import { api } from './api';
-import './styles/HomePage.css';
+import { api } from '../api';
+import '../Home/HomePage.css';
 
 function KpopLyricsPage() {
   const [songs, setSongs] = React.useState(() => {

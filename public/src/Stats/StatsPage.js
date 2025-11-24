@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { api } from './api';
-import './styles/StatsPage.css';
+import { api } from '../api';
+import './StatsPage.css';
 
 const WORD_TYPES = ['noun', 'proper-noun', 'verb', 'adjective', 'adverb', 'pronoun', 'conjunction', 'particle'];
 const TABS = [

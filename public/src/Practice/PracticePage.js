@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { api } from './api';
-import { generateVerbPracticeSentence } from './verbPractice';
-import './styles/HomePage.css';
+import { Link } from 'react-router-dom';
+import { api } from '../api';
+import { generateVerbPracticeSentence } from '../AudioLearning/verbPractice';
+import '../Home/HomePage.css';
 
 const SPEAK_ADVANCE_DELAY_MS = 1200;
 
@@ -22,25 +23,121 @@ const escapeHtml = (str) => {
 
 const mdToHtml = (md) => {
   if (!md) return '';
-  let txt = escapeHtml(md);
-  txt = txt.replace(/```([\s\S]*?)```/g, (m, p1) => `<pre><code>${p1}</code></pre>`);
+  let txt = md;
+  
+  // Process markdown tables first (before escaping HTML)
+  const lines = txt.split('\n');
+  const tableBlocks = [];
+  let currentTable = null;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    // Check if this line looks like a table row (starts and ends with |)
+    if (line.startsWith('|') && line.endsWith('|') && line.length > 2) {
+      if (!currentTable) {
+        currentTable = { start: i, lines: [] };
+      }
+      currentTable.lines.push(line);
+    } else {
+      // Not a table row - close current table if exists
+      if (currentTable && currentTable.lines.length >= 2) {
+        tableBlocks.push(currentTable);
+      }
+      currentTable = null;
+    }
+  }
+  // Don't forget the last table if file ends with table
+  if (currentTable && currentTable.lines.length >= 2) {
+    tableBlocks.push(currentTable);
+  }
+  
+  // Process tables from end to start to preserve indices when replacing
+  for (let i = tableBlocks.length - 1; i >= 0; i--) {
+    const block = tableBlocks[i];
+    const tableLines = block.lines;
+    
+    // Check if second line is a separator
+    let headerLineIndex = 0;
+    let dataStartIndex = 1;
+    if (tableLines.length > 1 && /^[\s|:\-]+$/.test(tableLines[1])) {
+      // Second line is separator
+      headerLineIndex = 0;
+      dataStartIndex = 2;
+    }
+    
+    if (dataStartIndex >= tableLines.length) continue;
+    
+    // Parse header
+    const headerCells = tableLines[headerLineIndex].split('|').map(c => c.trim()).filter(c => c);
+    if (headerCells.length === 0) continue;
+    
+    // Parse data rows
+    const dataRows = tableLines.slice(dataStartIndex).map(row => {
+      const cells = row.split('|').map(c => c.trim()).filter(c => c);
+      if (cells.length === 0) return '';
+      // Ensure we have the same number of cells as headers
+      while (cells.length < headerCells.length) cells.push('');
+      if (cells.length > headerCells.length) {
+        const trimmed = cells.slice(0, headerCells.length);
+        cells.length = 0;
+        cells.push(...trimmed);
+      }
+      return '<tr>' + cells.map(c => `<td style="padding: 6px 8px; border: 1px solid #ddd;">${escapeHtml(c)}</td>`).join('') + '</tr>';
+    }).filter(r => r);
+    
+    const headerRow = '<tr>' + headerCells.map(c => `<th style="padding: 6px 8px; border: 1px solid #ddd; background: #f3f4f6; font-weight: 600; text-align: left;">${escapeHtml(c)}</th>`).join('') + '</tr>';
+    
+    const tableHtml = '<table style="border-collapse: collapse; width: 100%; margin: 12px 0; border: 1px solid #ddd;"><thead>' + headerRow + '</thead><tbody>' + dataRows.join('') + '</tbody></table>';
+    
+    // Replace the table lines in the lines array
+    lines.splice(block.start, tableLines.length, tableHtml);
+  }
+  
+  // Rebuild txt from modified lines array
+  txt = lines.join('\n');
+  
+  // Now escape HTML for the rest of the content (but not tables which are already HTML)
+  const tableParts = txt.split(/(<table[\s\S]*?<\/table>)/g);
+  const processedParts = tableParts.map(part => {
+    if (part.startsWith('<table')) {
+      return part; // Already processed
+    }
+    return escapeHtml(part);
+  });
+  txt = processedParts.join('');
+  
+  // Code blocks
+  txt = txt.replace(/```([\s\S]*?)```/g, (m, p1) => `<pre style="background: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto;"><code>${p1}</code></pre>`);
+  // Bold **text**
   txt = txt.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  // Italics *text*
   txt = txt.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
-  txt = txt.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>')
-           .replace(/^##\s+(.+)$/gm, '<h2>$1</h2>')
-           .replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
-  txt = txt.replace(/^(?:[-*])\s+(.+)$/gm, '<li>$1</li>');
-  txt = txt.replace(/(<li>[\s\S]*?<\/li>)/g, (m) => `<ul>${m}</ul>`);
-  const parts = txt.split(/<pre>[\s\S]*?<\/pre>/g);
-  const preMatches = txt.match(/<pre>[\s\S]*?<\/pre>/g) || [];
+  // Headings (process from most specific to least specific)
+  txt = txt.replace(/^#####\s+(.+)$/gm, '<h5 style="margin: 10px 0 4px 0; font-size: 1em; font-weight: 600; color: #4b5563;">$1</h5>')
+           .replace(/^####\s+(.+)$/gm, '<h4 style="margin: 12px 0 6px 0; font-size: 1.1em; font-weight: 600; color: #374151;">$1</h4>')
+           .replace(/^###\s+(.+)$/gm, '<h3 style="margin: 16px 0 8px 0; font-size: 1.2em; font-weight: 600; color: #1f2937;">$1</h3>')
+           .replace(/^##\s+(.+)$/gm, '<h2 style="margin: 20px 0 10px 0; font-size: 1.3em; font-weight: 600; color: #111827;">$1</h2>')
+           .replace(/^#\s+(.+)$/gm, '<h1 style="margin: 24px 0 12px 0; font-size: 1.5em; font-weight: 700; color: #000;">$1</h1>');
+  // Lists
+  txt = txt.replace(/^(?:[-*])\s+(.+)$/gm, '<li style="margin: 4px 0;">$1</li>');
+  txt = txt.replace(/(<li[\s\S]*?<\/li>)/g, (m) => `<ul style="margin: 8px 0; padding-left: 24px;">${m}</ul>`);
+  
+  // Paragraphs (split by tables, code blocks, and headings)
+  const finalParts = txt.split(/(<table[\s\S]*?<\/table>|<pre[\s\S]*?<\/pre>|<h[1-5]>[\s\S]*?<\/h[1-5]>)/g);
   const htmlParts = [];
-  for (let i = 0; i < parts.length; i++) {
-    const p = parts[i]
-      .split(/\n{2,}/)
-      .map(seg => seg.trim() ? `<p>${seg.replace(/\n/g, '<br>')}</p>` : '')
-      .join('');
-    htmlParts.push(p);
-    if (preMatches[i]) htmlParts.push(preMatches[i]);
+  for (let i = 0; i < finalParts.length; i++) {
+    const part = finalParts[i];
+    // If it's already a table, code block, or heading, keep it as is
+    if (part.match(/^<(table|pre|h[1-5])/)) {
+      htmlParts.push(part);
+    } else {
+      // Otherwise, convert to paragraphs
+      const p = part
+        .split(/\n{2,}/)
+        .map(seg => seg.trim() ? `<p style="margin: 8px 0; line-height: 1.6;">${seg.replace(/\n/g, '<br>')}</p>` : '')
+        .join('');
+      htmlParts.push(p);
+    }
   }
   return htmlParts.join('');
 };
@@ -62,6 +159,7 @@ function PracticePage() {
   const [englishWordIndices, setEnglishWordIndices] = useState([]); // English word indices that correspond to blanks
   const [englishWordIndicesPhraseId, setEnglishWordIndicesPhraseId] = useState(null); // Track which phrase we have indices for
   const fetchingEnglishIndicesRef = React.useRef(false); // Prevent duplicate fetches
+  const inputRefs = React.useRef({}); // Refs for input fields to enable auto-focus on tab switch
   const [usedPhraseIds, setUsedPhraseIds] = useState([]); // Track which phrases we've used
   const [allPhrases, setAllPhrases] = useState([]); // Store all curriculum phrases
   const [usingVariations, setUsingVariations] = useState(false); // Whether we're in variation mode
@@ -82,19 +180,27 @@ function PracticePage() {
   const [practiceMode, setPracticeMode] = useState(() => {
     try {
       const saved = localStorage.getItem('practice_mode');
-      return saved ? parseInt(saved, 10) : 1;
+      return saved ? parseInt(saved, 10) : 4;
     } catch (_) {
-      return 1;
+      return 4;
     }
   }); // 1: curriculum, 2: verb practice, 3: conversation sets, 4: mix
   const [highlightEnglishWords, setHighlightEnglishWords] = useState(() => {
     try {
       const saved = localStorage.getItem('practice_highlight_english');
-      return saved !== null ? saved === 'true' : true; // Default to true
+      return saved !== null ? saved === 'true' : false; // Default to false
     } catch (_) {
-      return true;
+      return false;
     }
   }); // Whether to highlight English words corresponding to blanks
+  const [textSize, setTextSize] = useState(() => {
+    try {
+      const saved = localStorage.getItem('practice_textSize');
+      return saved ? parseFloat(saved) : 1.0; // Default to 1.0 (100%)
+    } catch (_) {
+      return 1.0;
+    }
+  }); // Text size multiplier (0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
   const [showSetDialog, setShowSetDialog] = useState(false); // Show/hide current set sentences
   const [randomBlankIndices, setRandomBlankIndices] = useState([]); // Random blank positions for current phrase
   const [wordTypesByPhraseId, setWordTypesByPhraseId] = useState({}); // POS tags per phrase id (tokens aligned to spaces)
@@ -113,9 +219,9 @@ function PracticePage() {
     const handleHighlightChange = () => {
       try {
         const saved = localStorage.getItem('practice_highlight_english');
-        setHighlightEnglishWords(saved !== null ? saved === 'true' : true);
+        setHighlightEnglishWords(saved !== null ? saved === 'true' : false);
       } catch (_) {
-        setHighlightEnglishWords(true);
+        setHighlightEnglishWords(false);
       }
     };
     window.addEventListener('practice_highlight_english_changed', handleHighlightChange);
@@ -123,6 +229,41 @@ function PracticePage() {
       window.removeEventListener('practice_highlight_english_changed', handleHighlightChange);
     };
   }, []);
+
+  // Listen for changes to text size setting from Navbar
+  useEffect(() => {
+    const handleTextSizeChange = () => {
+      try {
+        const saved = localStorage.getItem('practice_textSize');
+        setTextSize(saved ? parseFloat(saved) : 1.0);
+      } catch (_) {
+        setTextSize(1.0);
+      }
+    };
+    window.addEventListener('practice_textSize_changed', handleTextSizeChange);
+    return () => {
+      window.removeEventListener('practice_textSize_changed', handleTextSizeChange);
+    };
+  }, []);
+
+  // Auto-focus input when tab becomes visible
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden && currentPhrase && inputRefs.current[currentBlankIndex]) {
+        // Small delay to ensure the input is rendered
+        setTimeout(() => {
+          const input = inputRefs.current[currentBlankIndex];
+          if (input) {
+            input.focus();
+          }
+        }, 100);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [currentBlankIndex, currentPhrase]);
 
   // Build a list of candidate indices to blank, preferring to skip common particles and proper nouns
   const getCandidateBlankIndices = useCallback((words, types) => {
@@ -143,6 +284,93 @@ function PracticePage() {
     }
     return candidates;
   }, []);
+
+  // Select blank indices with priority for verbs (for verb practice mode)
+  const selectBlankIndicesWithVerbPriority = useCallback((words, types, desired, practiceMode) => {
+    if (!Array.isArray(words) || words.length === 0) return [];
+    
+    // Get all candidates
+    const candidates = getCandidateBlankIndices(words, types);
+    if (candidates.length === 0) {
+      // Fallback to all indices
+      return words.map((_, i) => i).slice(0, desired);
+    }
+    
+    // For verb practice mode, prioritize verbs
+    if (practiceMode === 2) {
+      const verbIndices = [];
+      const nonVerbIndices = [];
+      
+      for (const idx of candidates) {
+        const t = Array.isArray(types) && types.length === words.length ? String(types[idx] || '').toLowerCase() : '';
+        const word = String(words[idx] || '').trim();
+        
+        // Check if it's a verb by POS tag or by common verb endings
+        const isVerb = t && (t.includes('verb') || t.includes('v-'));
+        const looksLikeVerb = !isVerb && word && (
+          word.endsWith('다') || 
+          word.endsWith('요') || 
+          word.endsWith('어요') || 
+          word.endsWith('아요') || 
+          word.endsWith('해요') || 
+          word.endsWith('있어요') || 
+          word.endsWith('었어요') || 
+          word.endsWith('았어요') ||
+          word.endsWith('할') ||
+          word.endsWith('할 거예요') ||
+          word.includes('하고')
+        );
+        
+        if (isVerb || looksLikeVerb) {
+          verbIndices.push(idx);
+        } else {
+          nonVerbIndices.push(idx);
+        }
+      }
+      
+      // Prioritize verbs: try to fill at least half with verbs if available
+      const verbCount = Math.min(verbIndices.length, Math.ceil(desired / 2));
+      const nonVerbCount = desired - verbCount;
+      
+      const chosen = [];
+      
+      // Add verbs first
+      const verbPool = [...verbIndices];
+      for (let i = 0; i < verbCount && verbPool.length > 0; i++) {
+        const idx = Math.floor(Math.random() * verbPool.length);
+        chosen.push(verbPool[idx]);
+        verbPool.splice(idx, 1);
+      }
+      
+      // Add non-verbs to fill remaining slots
+      const nonVerbPool = [...nonVerbIndices];
+      for (let i = 0; i < nonVerbCount && nonVerbPool.length > 0; i++) {
+        const idx = Math.floor(Math.random() * nonVerbPool.length);
+        chosen.push(nonVerbPool[idx]);
+        nonVerbPool.splice(idx, 1);
+      }
+      
+      // If we still need more and have candidates left, fill from remaining
+      const remaining = [...verbPool, ...nonVerbPool];
+      while (chosen.length < desired && remaining.length > 0) {
+        const idx = Math.floor(Math.random() * remaining.length);
+        chosen.push(remaining[idx]);
+        remaining.splice(idx, 1);
+      }
+      
+      return chosen.sort((a, b) => a - b);
+    }
+    
+    // For other modes, use random selection from candidates
+    const pool = candidates.length >= desired ? [...candidates] : words.map((_, i) => i);
+    const chosen = [];
+    while (chosen.length < desired && pool.length > 0) {
+      const idx = Math.floor(Math.random() * pool.length);
+      chosen.push(pool[idx]);
+      pool.splice(idx, 1);
+    }
+    return chosen.sort((a, b) => a - b);
+  }, [getCandidateBlankIndices]);
 
   const createBlankPhrase = useCallback((phrase) => {
     if (!phrase) return { korean: '', blanks: [], translation: '', correct_answers: [] };
@@ -234,15 +462,23 @@ function PracticePage() {
     } else if (practiceMode === 4) {
       // Mix mode
       const total = mixState && mixState.mix_items ? mixState.mix_items.length : 0;
-      const used = mixState ? mixState.current_index : 0;
+      // Ensure current_index is a valid number, default to 0
+      const used = mixState && typeof mixState.current_index === 'number' ? mixState.current_index : 0;
       return { total, used, phrases: mixState && mixState.mix_items ? mixState.mix_items : [] };
     }
     return { total: 0, used: 0, phrases: [] };
-  }, [practiceMode, sessionPhrases, allPhrases, verbPracticeSession, conversationSession, usedPhraseIds]);
+  }, [practiceMode, sessionPhrases, allPhrases, verbPracticeSession, conversationSession, usedPhraseIds, mixState]);
   
   const activeTotal = activeSessionData.total;
   const activeUsed = activeSessionData.used;
   const activePhrases = activeSessionData.phrases;
+  
+  // Debug logging for mix mode index tracking
+  React.useEffect(() => {
+    if (practiceMode === 4 && mixState) {
+      console.log('[Index Display] activeUsed:', activeUsed, 'mixState.current_index:', mixState.current_index, 'activeTotal:', activeTotal, 'display:', `Item ${Math.min(Math.max(0, activeUsed) + 1, activeTotal)} of ${activeTotal}`);
+    }
+  }, [practiceMode, mixState, activeUsed, activeTotal]);
   const progressPercentage = activeTotal > 0 ? (activeUsed / activeTotal) * 100 : 0;
 
   // When practiceMode changes, reset and initialize session for that mode
@@ -579,27 +815,20 @@ Return ONLY the JSON object, no other text.`;
     if (!next || !next.id) return false;
     setUsedPhraseIds((prev) => prev.includes(next.id) ? prev : [...prev, next.id]);
     setCurrentPhrase(next);
-    // Create blank indices for verb practice
+    // Create blank indices for verb practice (prioritize verbs)
     const koreanText = String(next.korean_text || next.korean || '').trim();
     if (!koreanText) return false;
     const words = koreanText.split(' ').filter(w => w);
     if (words.length === 0) return false;
     const desired = Math.max(1, Math.min(3, Number(numBlanks) || 1));
-    const candidates = getCandidateBlankIndices(words, null);
-    let candidatePool = candidates.length >= desired ? [...candidates] : words.map((_, i) => i);
-    const chosen = [];
-    while (chosen.length < desired && candidatePool.length > 0) {
-      const idx = Math.floor(Math.random() * candidatePool.length);
-      chosen.push(candidatePool[idx]);
-      candidatePool.splice(idx, 1);
-    }
-    setRandomBlankIndices(chosen.sort((a, b) => a - b));
+    const chosen = selectBlankIndicesWithVerbPriority(words, null, desired, 2);
+    setRandomBlankIndices(chosen);
     setInputValues(new Array(chosen.length).fill(''));
     setCurrentBlankIndex(0);
     setShowAnswer(false);
     setFeedback('');
     return true;
-  }, [verbPracticeSession, usedPhraseIds, numBlanks, getCandidateBlankIndices]);
+  }, [verbPracticeSession, usedPhraseIds, numBlanks, selectBlankIndicesWithVerbPriority]);
 
   // Choose next phrase from conversation session (Mode 3)
   const selectNextConversationPhrase = useCallback(() => {
@@ -621,7 +850,9 @@ Return ONLY the JSON object, no other text.`;
     const words = koreanText.split(' ').filter(w => w);
     if (words.length === 0) return false;
     const desired = Math.max(1, Math.min(3, Number(numBlanks) || 1));
-    const candidates = getCandidateBlankIndices(words, null);
+    // Get word types to exclude proper nouns
+    const types = (next && wordTypesByPhraseId && wordTypesByPhraseId[next.id]) || null;
+    const candidates = getCandidateBlankIndices(words, types);
     let candidatePool = candidates.length >= desired ? [...candidates] : words.map((_, i) => i);
     const chosen = [];
     while (chosen.length < desired && candidatePool.length > 0) {
@@ -635,7 +866,7 @@ Return ONLY the JSON object, no other text.`;
     setShowAnswer(false);
     setFeedback('');
     return true;
-  }, [conversationSession, usedPhraseIds, numBlanks, getCandidateBlankIndices]);
+  }, [conversationSession, usedPhraseIds, numBlanks, getCandidateBlankIndices, wordTypesByPhraseId]);
 
   // Extract first JSON object from a chat response
   const parseJsonObject = useCallback((text) => {
@@ -736,6 +967,13 @@ Return ONLY the JSON object, no other text.`;
 
   // Speak the full Korean sentence (with blanks filled) three times
   const handleSpeakFullThreeTimes = useCallback(() => {
+    // Unmute if currently muted
+    if (window.__APP_MUTED__ === true) {
+      try {
+        localStorage.setItem('app_muted', '0');
+        window.__APP_MUTED__ = false;
+      } catch (_) {}
+    }
     try { const synth = window.speechSynthesis; if (synth) synth.cancel(); } catch (_) {}
     const full = getFullKoreanSentence();
     if (!full) return;
@@ -848,7 +1086,12 @@ Return ONLY the JSON object, no other text.`;
         
         // Set mix state (similar to MixPage - don't validate here, just set it)
         if (state) {
-          console.log('Setting mix state with', state.mix_items?.length || 0, 'items');
+          console.log('Setting mix state with', state.mix_items?.length || 0, 'items, current_index:', state.current_index);
+          // Ensure current_index is a number
+          if (typeof state.current_index !== 'number') {
+            state.current_index = 0;
+            console.warn('Fixed invalid current_index, setting to 0');
+          }
           setMixState(state);
           
           // Validate and load items
@@ -857,9 +1100,20 @@ Return ONLY the JSON object, no other text.`;
             const convItems = state.mix_items.filter(item => item.type === 'conversation');
             setPreviousConversationSentences(convItems);
             // Load current item at current_index directly (no skipping)
-            if (state.current_index < state.mix_items.length) {
-              const currentItem = state.mix_items[state.current_index];
-              console.log('Loading phrase at index', state.current_index, 'directly (no skipping)');
+            // After reset, current_index should be 0, so we load the first item
+            let currentIndex = typeof state.current_index === 'number' ? state.current_index : 0;
+            // Ensure index is valid (0 to length-1)
+            if (currentIndex < 0) currentIndex = 0;
+            if (currentIndex >= state.mix_items.length) {
+              console.warn('currentIndex out of bounds, resetting to 0. currentIndex:', currentIndex, 'length:', state.mix_items.length);
+              currentIndex = 0;
+              // Update the database to fix the invalid index
+              api.updateMixIndex(0).catch(err => console.error('Failed to fix index:', err));
+            }
+            console.log('reloadMixState - currentIndex:', currentIndex, 'total items:', state.mix_items.length, 'state.current_index:', state.current_index);
+            if (currentIndex < state.mix_items.length) {
+              const currentItem = state.mix_items[currentIndex];
+              console.log('Loading phrase at index', currentIndex, 'directly (no skipping)');
               console.log('Current item:', currentItem);
               const phrase = convertMixItemToPhrase(currentItem);
               console.log('Converted phrase:', phrase);
@@ -879,10 +1133,7 @@ Return ONLY the JSON object, no other text.`;
                 setRandomBlankIndices(chosen.sort((a, b) => a - b));
                 setInputValues(new Array(chosen.length).fill(''));
                 setCurrentBlankIndex(0);
-                // Reset explanation state when loading new phrase
-                setExplanationText('');
-                setExplanationPhraseId(null);
-                setShowExplanation(false);
+                // Keep explanation from previous question - don't clear it
               } else {
                 console.warn('Failed to convert mix item to phrase:', currentItem);
                 setError('Failed to load current mix item. Please try again.');
@@ -1145,6 +1396,28 @@ Korean: ${ko}`;
     return () => { cancelled = true; };
   }, [sessionPhrases, tagPhraseWordTypes]); 
 
+  // Fetch word types for conversation sentences
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const subset = Array.isArray(conversationSession) ? conversationSession : [];
+      const updates = {};
+      await Promise.all(subset.map(async (p) => {
+        const pid = p && p.id;
+        if (!pid) return;
+        if (wordTypesByPhraseId && wordTypesByPhraseId[pid]) return;
+        const types = await tagPhraseWordTypes(p);
+        if (!cancelled && types && Array.isArray(types)) {
+          updates[pid] = types;
+        }
+      }));
+      if (!cancelled && Object.keys(updates).length > 0) {
+        setWordTypesByPhraseId(prev => ({ ...prev, ...updates }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [conversationSession, tagPhraseWordTypes, wordTypesByPhraseId]);
+
   // Generate a variation of a phrase using AI
   const generateVariation = useCallback(async (basePhrase) => {
     try {
@@ -1384,24 +1657,15 @@ Respond with ONLY a JSON object in this format:
           return;
         }
         setCurrentPhrase(data);
-        // Create blank indices for verb practice
+        // Create blank indices for verb practice (prioritize verbs)
         const words = data.korean_text.trim().split(' ').filter(w => w);
         const desired = Math.max(1, Math.min(3, Number(numBlanks) || 1));
-        const candidates = getCandidateBlankIndices(words, null);
-        let pool = candidates.length >= desired ? [...candidates] : words.map((_, i) => i);
-        const chosen = [];
-        while (chosen.length < desired && pool.length > 0) {
-          const idx = Math.floor(Math.random() * pool.length);
-          chosen.push(pool[idx]);
-          pool.splice(idx, 1);
-        }
-        setRandomBlankIndices(chosen.sort((a, b) => a - b));
+        const chosen = selectBlankIndicesWithVerbPriority(words, null, desired, 2);
+        setRandomBlankIndices(chosen);
         const blankIndices = chosen.sort((a, b) => a - b);
         setInputValues(new Array(blankIndices.length).fill(''));
         setCurrentBlankIndex(0);
-        setExplanationText('');
-        setExplanationPhraseId(null);
-        setShowExplanation(false);
+        // Keep explanation from previous question - don't clear it
         setShowAnswer(false);
         setShowAnswerBelow(false);
         setLoading(false);
@@ -1435,9 +1699,7 @@ Respond with ONLY a JSON object in this format:
             setRandomBlankIndices(chosen.sort((a, b) => a - b));
             setInputValues(new Array(chosen.length).fill(''));
             setCurrentBlankIndex(0);
-            setExplanationText('');
-            setExplanationPhraseId(null);
-            setShowExplanation(false);
+            // Keep explanation from previous question - don't clear it
             setShowAnswer(false);
             setLoading(false);
             return;
@@ -1474,9 +1736,7 @@ Respond with ONLY a JSON object in this format:
         setRandomBlankIndices(chosen.sort((a, b) => a - b));
         setInputValues(new Array(chosen.length).fill(''));
         setCurrentBlankIndex(0);
-        setExplanationText('');
-        setExplanationPhraseId(null);
-        setShowExplanation(false);
+        // Keep explanation from previous question - don't clear it
         setShowAnswer(false);
         setShowAnswerBelow(false);
         setLoading(false);
@@ -1507,9 +1767,7 @@ Respond with ONLY a JSON object in this format:
         const blankIndices = chosen.sort((a, b) => a - b);
         setInputValues(new Array(blankIndices.length).fill(''));
         setCurrentBlankIndex(0);
-        setExplanationText('');
-        setExplanationPhraseId(null);
-        setShowExplanation(false);
+        // Keep explanation from previous question - don't clear it
         setShowAnswer(false);
         setShowAnswerBelow(false);
         setLoading(false);
@@ -1581,9 +1839,7 @@ Respond with ONLY a JSON object in this format:
       const blankIndices = data.blank_word_indices || (data.blank_word_index !== null && data.blank_word_index !== undefined ? [data.blank_word_index] : []);
       setInputValues(new Array(blankIndices.length).fill(''));
       setCurrentBlankIndex(0);
-      setExplanationText('');
-      setExplanationPhraseId(null);
-      setShowExplanation(false);
+      // Keep explanation from previous question - don't clear it
       setShowAnswer(false);
       setShowAnswerBelow(false);
       setLoading(false);
@@ -1627,25 +1883,132 @@ Respond with ONLY a JSON object in this format:
       }).join(' ');
       
       const english = blankPhrase.translation;
-      const prompt = `Explain this Korean sentence in detail.
+      
+      // Determine phrase type and ID for database lookup
+      let phraseType = 'curriculum';
+      let phraseId = currentId;
+      
+      if (practiceMode === 4 && mixState && mixState.mix_items) {
+        // Mix mode - determine type from mix item
+        const currentItem = mixState.mix_items[mixState.current_index];
+        if (currentItem) {
+          phraseType = currentItem.type || 'mix';
+          phraseId = currentItem.id || currentId;
+        }
+      } else if (practiceMode === 3) {
+        phraseType = 'conversation';
+      } else if (practiceMode === 2) {
+        phraseType = 'verb_practice';
+      } else if (practiceMode === 1) {
+        phraseType = 'curriculum';
+        // For curriculum, use db_id if available
+        phraseId = currentPhrase.db_id || currentId;
+      }
+      
+      // Try to get explanation from database first
+      try {
+        const explanationRes = await api.getExplanation(phraseId, phraseType);
+        if (explanationRes.ok) {
+          const explanationData = await explanationRes.json();
+          if (explanationData.explanation) {
+            setExplanationText(explanationData.explanation);
+            setExplanationPhraseId(currentId);
+            setIsLoadingExplanation(false);
+            return;
+          }
+        }
+      } catch (dbErr) {
+        // If database lookup fails, try by text as fallback
+        try {
+          const textRes = await api.getExplanationByText(fullKorean, english);
+          if (textRes.ok) {
+            const textData = await textRes.json();
+            if (textData.explanation) {
+              setExplanationText(textData.explanation);
+              setExplanationPhraseId(currentId);
+              setIsLoadingExplanation(false);
+              // Also save it with the current phrase ID for future lookups
+              try {
+                console.log('[Explanation] Attempting to save explanation from text lookup:', { phraseId, phraseType });
+                const saveRes = await api.saveExplanation(phraseId, phraseType, fullKorean, english, textData.explanation);
+                if (saveRes.ok) {
+                  console.log('[Explanation] ✓ Successfully saved explanation from text lookup');
+                } else {
+                  const errorText = await saveRes.text().catch(() => 'Unknown error');
+                  console.error('[Explanation] ✗ Failed to save explanation from text lookup:', saveRes.status, errorText);
+                }
+              } catch (saveErr) {
+                console.error('[Explanation] ✗ Exception while saving explanation from text lookup:', saveErr);
+              }
+              return;
+            }
+          }
+        } catch (_) {}
+      }
+      
+      // If not in database, generate explanation via AI
+      const prompt = `Explain this Korean sentence concisely (keep under 15 lines total).
 Korean: ${fullKorean}
 English: ${english}
-Please include a clear breakdown of grammar (particles, tense, politeness), vocabulary with brief glosses, and any important notes for a learner.
-Break down particles such as 은/는, 이/가, 을/를, 에, 에서, etc, verbs and their root forms, and pronouns
-Keep it concise and structured, focusing on helping someone understand how the sentence works.`;
+
+Format your response as follows:
+
+#### Grammar Rules Involving Endings Based on Consonant/Vowel (받침 Rules)
+- State whether the verb/adjective stem ends with a consonant (받침) or vowel (no 받침)
+- Explain how endings change based on 받침 presence (e.g., "The verb '일어나다' has a stem ending in a vowel ('일어'), and it takes '났어' for the past tense in an informal polite form.")
+- If applicable, mention consonant assimilation rules (e.g., ㄷ irregular verbs, ㅂ irregular verbs, ㄹ irregular verbs)
+- If applicable, mention vowel harmony rules
+- If applicable, mention 받침-related sound changes or contractions
+- If none apply, state "No specific [rule type] applies here."
+
+#### Breakdown of the Sentence
+
+##### Particles and Their Functions
+List each particle with its function (e.g., "은 (은/는): Topic marker. '오늘은' indicates that '오늘' is the topic of the sentence.")
+
+##### Tense and Politeness Levels
+State the tense and politeness level with brief explanation.
+
+##### Vocabulary with Brief Glosses
+List key vocabulary words with brief English translations.
+
+##### Verb/Adjective Root Forms and Conjugations
+Format as a table to save space:
+| Form | Value |
+|------|-------|
+| Root | [dictionary form ending in 다 of the verb/adjective that carries the tense and politeness markers in the sentence. Identify the word that is actually conjugated (has tense/politeness endings like -어요, -아요, -을 거예요, etc.), not other verbs/adjectives that appear as nouns or in other forms. For example, in "행복을 들 거예요", the root is "듣다" (the verb being conjugated), not "행복하다" (which appears as a noun "행복을")] |
+| Conjugation | [the actual conjugated verb/adjective form as it appears in the sentence, e.g., "들 거예요" from "듣다"] |
+
+Keep the entire explanation under 15 lines. Be concise and focus only on the essential grammar points.
+IMPORTANT: Do NOT include romanizations (like "naeil" or "mollayo") in your explanation. Only use Korean characters and English translations.`;
       const res = await api.chat(prompt);
       if (res.ok) {
         const data = await res.json();
         const text = data.response || '';
         setExplanationText(text);
         setExplanationPhraseId(currentId);
+        
+        // Save explanation to database for future use
+        try {
+          console.log('[Explanation] Attempting to save explanation:', { phraseId, phraseType, koreanLength: fullKorean.length, englishLength: english.length, explanationLength: text.length });
+          const saveRes = await api.saveExplanation(phraseId, phraseType, fullKorean, english, text);
+          if (saveRes.ok) {
+            console.log('[Explanation] ✓ Successfully saved explanation to database');
+          } else {
+            const errorText = await saveRes.text().catch(() => 'Unknown error');
+            console.error('[Explanation] ✗ Failed to save explanation:', saveRes.status, errorText);
+          }
+        } catch (saveErr) {
+          console.error('[Explanation] ✗ Exception while saving explanation to database:', saveErr);
+          // Don't fail the request if saving fails
+        }
       }
     } catch (_) {
       setExplanationText('Failed to load explanation.');
     } finally {
       setIsLoadingExplanation(false);
     }
-  }, [currentPhrase, blankPhrase, explanationText, explanationPhraseId]);
+  }, [currentPhrase, blankPhrase, explanationText, explanationPhraseId, practiceMode, mixState]);
 
   const handleToggleExplanation = useCallback(() => {
     setShowExplanation(v => {
@@ -1746,15 +2109,8 @@ Keep it concise and structured, focusing on helping someone understand how the s
             setCurrentPhrase(session[0]);
             const words = session[0].korean_text.trim().split(' ').filter(w => w);
             const desired = Math.max(1, Math.min(3, Number(numBlanks) || 1));
-            const candidates = getCandidateBlankIndices(words, null);
-            let pool = candidates.length >= desired ? [...candidates] : words.map((_, i) => i);
-            const chosen = [];
-            while (chosen.length < desired && pool.length > 0) {
-              const idx = Math.floor(Math.random() * pool.length);
-              chosen.push(pool[idx]);
-              pool.splice(idx, 1);
-            }
-            setRandomBlankIndices(chosen.sort((a, b) => a - b));
+            const chosen = selectBlankIndicesWithVerbPriority(words, null, desired, 2);
+            setRandomBlankIndices(chosen);
             setInputValues(new Array(chosen.length).fill(''));
             setCurrentBlankIndex(0);
           }
@@ -1768,9 +2124,16 @@ Keep it concise and structured, focusing on helping someone understand how the s
             (async () => {
               try {
                 await api.updateMixIndex(nextIndex);
+                // Reload mix state to get updated index
                 const res = await api.getMixState();
                 if (res.ok) {
                   const updatedState = await res.json();
+                  // Ensure current_index is a number and matches nextIndex
+                  if (typeof updatedState.current_index !== 'number' || updatedState.current_index !== nextIndex) {
+                    console.warn('Index mismatch (skip) - expected:', nextIndex, 'got:', updatedState.current_index, 'fixing...');
+                    updatedState.current_index = nextIndex;
+                  }
+                  console.log('Updated mix state (skip) - current_index:', updatedState.current_index, 'nextIndex:', nextIndex);
                   setMixState(updatedState);
                   const nextItem = updatedState.mix_items[nextIndex];
                   const phrase = convertMixItemToPhrase(nextItem);
@@ -1789,6 +2152,10 @@ Keep it concise and structured, focusing on helping someone understand how the s
                     setRandomBlankIndices(chosen.sort((a, b) => a - b));
                     setInputValues(new Array(chosen.length).fill(''));
                     setCurrentBlankIndex(0);
+                    // Reset show answer state for next question
+                    setShowAnswer(false);
+                    setShowAnswerBelow(false);
+                    // Keep explanation from previous question - don't clear it
                   }
                 }
               } catch (err) {
@@ -1796,7 +2163,46 @@ Keep it concise and structured, focusing on helping someone understand how the s
               }
             })();
           } else {
-            setError('Mix completed! Generate a new mix to continue.');
+            // Mix completed! Save score and reset mix
+            (async () => {
+              try {
+                // Get final mix state to get first_try_correct_count
+                const res = await api.getMixState();
+                if (res.ok) {
+                  const finalState = await res.json();
+                  const totalQuestions = finalState.mix_items?.length || 0;
+                  const firstTryCorrect = finalState.first_try_correct_count || 0;
+                  
+                  // Save score
+                  if (totalQuestions > 0) {
+                    await api.saveMixScore(totalQuestions, firstTryCorrect);
+                    console.log(`Mix score saved: ${firstTryCorrect}/${totalQuestions}`);
+                  }
+                  
+                          // Reset mix state (index to 0, first_try_correct_count to 0)
+                          const resetRes = await api.resetMixState();
+                          if (!resetRes.ok) {
+                            const errorData = await resetRes.json().catch(() => ({ error: 'Unknown error' }));
+                            console.error('Failed to reset mix state (skip):', resetRes.status, errorData);
+                            throw new Error(`Failed to reset mix state: ${errorData.error || 'Unknown error'}`);
+                          }
+                          console.log('Mix state reset in database (skip)');
+                          
+                          // Small delay to ensure database update is complete
+                          await new Promise(resolve => setTimeout(resolve, 200));
+                          
+                          // Reload mix state to reflect reset and load first question
+                          console.log('Reloading mix state after reset (skip)...');
+                          await reloadMixState();
+                          console.log('Mix state reloaded (skip), should be at index 0 now');
+                          
+                          setError(`Mix completed! Score: ${firstTryCorrect}/${totalQuestions} (${Math.round((firstTryCorrect / totalQuestions) * 100)}%). Mix reset to question 1.`);
+                }
+              } catch (err) {
+                console.error('Error saving score and resetting mix:', err);
+                setError('Mix completed! (Error saving score)');
+              }
+            })();
           }
         } else {
           setError('No mix found. Generate a mix in the Mix page first.');
@@ -1888,26 +2294,37 @@ Keep it concise and structured, focusing on helping someone understand how the s
       }
       
       const isCorrect = correctAnswers.some(ans => {
-        // Include punctuation in comparison - user must type the exact word including punctuation
-        const normalizedInput = currentInput.trim();
-        const normalizedAns = String(ans).trim();
+        // Remove punctuation from comparison - user doesn't need to type punctuation
+        const removePunctuation = (str) => String(str || '').trim().replace(/[.,!?;:]/g, '');
+        const normalizedInput = removePunctuation(currentInput);
+        const normalizedAns = removePunctuation(ans);
         return normalizedInput === normalizedAns;
       });
       
       if (isCorrect) {
-        // Check if all blanks are filled (including punctuation)
+        // Check if all blanks are filled (punctuation not required)
+        const removePunctuation = (str) => String(str || '').trim().replace(/[.,!?;:]/g, '');
         const allBlanksFilled = inputValues.length === blankPhrase.blanks.length && 
                                 inputValues.every((val, idx) => {
                                   const ans = blankPhrase.correct_answers[idx] || blankPhrase.blanks[idx];
-                                  // Include punctuation in comparison - user must type the exact word including punctuation
-                                  const normalizedVal = String(val).trim();
-                                  const normalizedAns = String(ans).trim();
+                                  // Remove punctuation from comparison - user doesn't need to type punctuation
+                                  const normalizedVal = removePunctuation(val);
+                                  const normalizedAns = removePunctuation(ans);
                                   return normalizedVal === normalizedAns;
                                 });
         
         if (allBlanksFilled) {
           // All blanks are correct!
           setFeedback('All correct! Great job!');
+          
+          // Track first-try correct for mix mode (only if user didn't click "Show Answer")
+          if (practiceMode === 4 && !showAnswer && !showAnswerBelow) {
+            try {
+              await api.incrementMixFirstTryCorrect();
+            } catch (err) {
+              console.error('Failed to increment first try correct:', err);
+            }
+          }
           
           // Auto-activate explanation after correct answer (only if explanation is available)
           setTimeout(() => {
@@ -2028,15 +2445,8 @@ Keep it concise and structured, focusing on helping someone understand how the s
                       setCurrentPhrase(session[0]);
                       const words = session[0].korean_text.trim().split(' ').filter(w => w);
                       const desired = Math.max(1, Math.min(3, Number(numBlanks) || 1));
-                      const candidates = getCandidateBlankIndices(words, null);
-                      let pool = candidates.length >= desired ? [...candidates] : words.map((_, i) => i);
-                      const chosen = [];
-                      while (chosen.length < desired && pool.length > 0) {
-                        const idx = Math.floor(Math.random() * pool.length);
-                        chosen.push(pool[idx]);
-                        pool.splice(idx, 1);
-                      }
-                      setRandomBlankIndices(chosen.sort((a, b) => a - b));
+                      const chosen = selectBlankIndicesWithVerbPriority(words, null, desired, 2);
+                      setRandomBlankIndices(chosen);
                       setInputValues(new Array(chosen.length).fill(''));
                       setCurrentBlankIndex(0);
                     }
@@ -2100,12 +2510,18 @@ Keep it concise and structured, focusing on helping someone understand how the s
                     (async () => {
                       try {
                         await api.updateMixIndex(nextIndex);
-                        // Reload mix state
+                        // Reload mix state to get updated index
                         const res = await api.getMixState();
                         if (res.ok) {
                           const updatedState = await res.json();
+                          // Ensure current_index is a number and matches nextIndex
+                          if (typeof updatedState.current_index !== 'number' || updatedState.current_index !== nextIndex) {
+                            console.warn('Index mismatch - expected:', nextIndex, 'got:', updatedState.current_index, 'fixing...');
+                            updatedState.current_index = nextIndex;
+                          }
+                          console.log('Updated mix state - current_index:', updatedState.current_index, 'nextIndex:', nextIndex);
                           setMixState(updatedState);
-                          // Load next item
+                          // Load next item using the updated state
                           const nextItem = updatedState.mix_items[nextIndex];
                           const phrase = convertMixItemToPhrase(nextItem);
                           if (phrase) {
@@ -2123,6 +2539,10 @@ Keep it concise and structured, focusing on helping someone understand how the s
                             setRandomBlankIndices(chosen.sort((a, b) => a - b));
                             setInputValues(new Array(chosen.length).fill(''));
                             setCurrentBlankIndex(0);
+                            // Reset show answer state for next question
+                            setShowAnswer(false);
+                            setShowAnswerBelow(false);
+                            // Keep explanation from previous question - don't clear it
                           }
                         }
                       } catch (err) {
@@ -2130,7 +2550,49 @@ Keep it concise and structured, focusing on helping someone understand how the s
                       }
                     })();
                   } else {
-                    setFeedback('Mix completed! Generate a new mix to continue.');
+                    // Mix completed! Save score and reset mix
+                    console.log('Mix completed! Saving score and resetting...');
+                    (async () => {
+                      try {
+                        // Get final mix state to get first_try_correct_count
+                        const res = await api.getMixState();
+                        if (res.ok) {
+                          const finalState = await res.json();
+                          const totalQuestions = finalState.mix_items?.length || 0;
+                          const firstTryCorrect = finalState.first_try_correct_count || 0;
+                          
+                          console.log(`Final state - totalQuestions: ${totalQuestions}, firstTryCorrect: ${firstTryCorrect}, current_index: ${finalState.current_index}`);
+                          
+                          // Save score
+                          if (totalQuestions > 0) {
+                            await api.saveMixScore(totalQuestions, firstTryCorrect);
+                            console.log(`Mix score saved: ${firstTryCorrect}/${totalQuestions}`);
+                          }
+                          
+                          // Reset mix state (index to 0, first_try_correct_count to 0)
+                          const resetRes = await api.resetMixState();
+                          if (!resetRes.ok) {
+                            const errorData = await resetRes.json().catch(() => ({ error: 'Unknown error' }));
+                            console.error('Failed to reset mix state:', resetRes.status, errorData);
+                            throw new Error(`Failed to reset mix state: ${errorData.error || 'Unknown error'}`);
+                          }
+                          console.log('Mix state reset in database (correct answer)');
+                          
+                          // Small delay to ensure database update is complete
+                          await new Promise(resolve => setTimeout(resolve, 200));
+                          
+                          // Reload mix state to reflect reset and load first question
+                          console.log('Reloading mix state after reset (correct answer)...');
+                          await reloadMixState();
+                          console.log('Mix state reloaded (correct answer), should be at index 0 now');
+                          
+                          setFeedback(`Mix completed! Score: ${firstTryCorrect}/${totalQuestions} (${Math.round((firstTryCorrect / totalQuestions) * 100)}%). Mix reset to question 1.`);
+                        }
+                      } catch (err) {
+                        console.error('Error saving score and resetting mix:', err);
+                        setFeedback('Mix completed! (Error saving score)');
+                      }
+                    })();
                   }
                 }
               }
@@ -2191,6 +2653,18 @@ Keep it concise and structured, focusing on helping someone understand how the s
   }
 
   if (error) {
+    const handleTryAgain = async () => {
+      setError(null);
+      setLoading(true);
+      if (practiceMode === 4) {
+        // For mix mode, reload the mix state
+        await reloadMixState();
+      } else {
+        // For other modes, fetch a random phrase
+        await fetchRandomPhrase();
+      }
+    };
+    
     return (
       <div className="sentence-box">
         <div className="error-message" style={{ padding: '12px', background: '#fee', border: '1px solid #fcc', borderRadius: 4, color: '#c33', marginBottom: 12 }}>
@@ -2201,7 +2675,7 @@ Keep it concise and structured, focusing on helping someone understand how the s
             </div>
           ) : null}
         </div>
-        <button onClick={fetchRandomPhrase} className="generate-button" style={{ marginTop: 12 }}>
+        <button onClick={handleTryAgain} className="generate-button" style={{ marginTop: 12 }}>
           Try Again
         </button>
       </div>
@@ -2219,47 +2693,81 @@ Keep it concise and structured, focusing on helping someone understand how the s
   return (
     <div className="sentence-box">
       {/* Progress box moved to bottom */}
-      <p className="korean-sentence">
-        {koreanParts.map((part, idx) => (
-          <React.Fragment key={idx}>
-            {part}
-            {idx < blankCount && (
-              <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', verticalAlign: 'baseline', margin: '0 2px' }}>
-                <input
-                  type="text"
-                  className="fill-in-blank-input"
-                  value={inputValues[idx] || ''}
-                  onChange={(e) => {
-                    handleInputChange(idx, e.target.value);
-                  }}
-                  onKeyDown={(e) => {
-                    handleKeyDown(e, idx);
-                  }}
-                  placeholder={idx === currentBlankIndex ? inputPlaceholder || '' : ''}
-                  autoFocus={idx === currentBlankIndex}
-                  style={{ 
-                    width: `${Math.max((blankPhrase.blanks[idx]?.length || 3) * 1.5, 3)}em`,
-                    borderColor: inputValues[idx] && idx === currentBlankIndex ? '#3498db' : undefined
-                  }}
-                />
-                {showAnswerBelow && (
-                  <div style={{ 
-                    fontSize: '0.9rem', 
-                    color: '#28a745', 
-                    fontWeight: 600,
-                    marginTop: '2px',
-                    textAlign: 'center',
-                    lineHeight: 1.2
-                  }}>
-                    {blankPhrase.correct_answers[idx] || blankPhrase.blanks[idx] || ''}
-                  </div>
-                )}
-              </span>
-            )}
-          </React.Fragment>
-        ))}
+      <p className="korean-sentence" style={{ 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'center', 
+        gap: 8, 
+        flexWrap: 'wrap',
+        fontSize: `${2.5 * textSize}rem`
+      }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          {koreanParts.map((part, idx) => (
+            <React.Fragment key={idx}>
+              {part}
+              {idx < blankCount && (
+                <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', verticalAlign: 'baseline', margin: '0 2px' }}>
+                  <input
+                    ref={(el) => { inputRefs.current[idx] = el; }}
+                    type="text"
+                    className="fill-in-blank-input"
+                    value={inputValues[idx] || ''}
+                    onChange={(e) => {
+                      handleInputChange(idx, e.target.value);
+                    }}
+                    onKeyDown={(e) => {
+                      handleKeyDown(e, idx);
+                    }}
+                    placeholder={idx === currentBlankIndex ? inputPlaceholder || '' : ''}
+                    autoFocus={idx === currentBlankIndex}
+                    style={{ 
+                      width: `${Math.max((blankPhrase.blanks[idx]?.length || 3) * 1.5, 3)}em`,
+                      borderColor: inputValues[idx] && idx === currentBlankIndex ? '#3498db' : undefined,
+                      fontSize: `${2.5 * textSize}rem`,
+                      lineHeight: '1.5'
+                    }}
+                  />
+                  {showAnswerBelow && (
+                    <div style={{ 
+                      fontSize: `${0.9 * textSize}rem`, 
+                      color: '#28a745', 
+                      fontWeight: 600,
+                      marginTop: '2px',
+                      textAlign: 'center',
+                      lineHeight: 1.2
+                    }}>
+                      {blankPhrase.correct_answers[idx] || blankPhrase.blanks[idx] || ''}
+                    </div>
+                  )}
+                </span>
+              )}
+            </React.Fragment>
+          ))}
+        </span>
+        <button
+          type="button"
+          onClick={handleSpeakFullThreeTimes}
+          style={{
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: '4px 8px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#6b7280',
+            fontSize: '1.2em'
+          }}
+          title="Speak full Korean sentence three times"
+        >
+          🔊
+        </button>
       </p>
-      <p className="translation" style={{ marginTop: 8, textAlign: 'center' }}>
+      <p className="translation" style={{ 
+        marginTop: 8, 
+        textAlign: 'center',
+        fontSize: `${1.5 * textSize}rem`
+      }}>
         {(() => {
           const translation = blankPhrase.translation || '';
           // Highlight English words that correspond to blank Korean words in all modes
@@ -2308,45 +2816,59 @@ Keep it concise and structured, focusing on helping someone understand how the s
           {showAnswer ? 'Hide Answer' : 'Show Answer'}
         </button>
         <button 
+          type="button"
+          onClick={handleToggleExplanation}
+          className="regenerate-button"
+          disabled={isLoadingExplanation}
+        >
+          {isLoadingExplanation ? 'Loading...' : (showExplanation ? 'Hide Explanation' : 'Explain Sentence')}
+        </button>
+        <button 
           onClick={handleSkip}
           className="regenerate-button"
         >
           Skip
         </button>
-        <button 
-          type="button"
-          className="regenerate-button"
-          onClick={handleSpeakFullThreeTimes}
-          title="Speak full Korean sentence three times"
-        >
-          Speak x3 (KO)
-        </button>
       </div>
-      <div className="sentence-box" style={{ textAlign: 'left', marginTop: 8 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ margin: 0 }}>Explanation:</h3>
-          <button
-            type="button"
-            className="regenerate-button"
-            onClick={() => { setExplanationText(''); setExplanationPhraseId(null); fetchExplanation(); }}
-            title="Explain the current sentence"
-          >
-            Explain
-          </button>
+      {showExplanation && (
+        <div className="sentence-box" style={{ textAlign: 'left', marginTop: 16, padding: '16px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: '1.2em', fontWeight: 600, color: '#1f2937' }}>Explanation</h3>
+          <div style={{ marginTop: 8 }}>
+            {isLoadingExplanation ? (
+              <p style={{ margin: '8px 0', color: '#6b7280', fontStyle: 'italic' }}>Loading explanation...</p>
+            ) : explanationText ? (
+              <>
+                <div 
+                  style={{ 
+                    lineHeight: '1.7',
+                    color: '#374151',
+                    fontSize: '0.95em'
+                  }}
+                  dangerouslySetInnerHTML={{ __html: mdToHtml(explanationText) }}
+                />
+                {currentPhrase && blankPhrase && (() => {
+                  const fullKorean = getFullKoreanSentence();
+                  const english = blankPhrase.translation || currentPhrase.english_text || '';
+                  return fullKorean && english ? (
+                    <div style={{ marginTop: 16, textAlign: 'center', paddingTop: 12, borderTop: '1px solid #e5e7eb' }}>
+                      <Link
+                        to={`/chat?input=${encodeURIComponent(english)}&translation=${encodeURIComponent(fullKorean)}`}
+                        className="regenerate-button"
+                        style={{ textDecoration: 'none', display: 'inline-block' }}
+                        title="Open in chat to ask follow-up questions about this explanation"
+                      >
+                        Ask Questions
+                      </Link>
+                    </div>
+                  ) : null;
+                })()}
+              </>
+            ) : (
+              <p style={{ margin: '8px 0', color: '#6b7280', fontStyle: 'italic' }}>No explanation yet.</p>
+            )}
+          </div>
         </div>
-        <div style={{ marginTop: 8 }}>
-          {isLoadingExplanation ? (
-            <p style={{ margin: '4px 0', color: '#6b7280' }}>Loading explanation...</p>
-          ) : explanationText ? (
-            <div 
-              style={{ lineHeight: '1.6' }}
-              dangerouslySetInnerHTML={{ __html: mdToHtml(explanationText) }}
-            />
-          ) : (
-            <p style={{ margin: '4px 0', color: '#6b7280' }}>No explanation yet.</p>
-          )}
-        </div>
-      </div>
+      )}
       {usingVariations && (
         <div style={{ marginTop: 8, padding: '12px', background: '#e3f2fd', border: '1px solid #90caf9', borderRadius: 8 }}>
           <div style={{ marginBottom: 12 }}>
@@ -2399,7 +2921,15 @@ Keep it concise and structured, focusing on helping someone understand how the s
               </h2>
             )}
             <h3 style={{ margin: '4px 0 0 0', color: '#6b7280', fontWeight: 600 }}>
-              {activeUsed} / {activeTotal} phrases (session)
+              {practiceMode === 4 ? (
+                activeTotal > 0 ? (
+                  <>Item {Math.min(Math.max(0, activeUsed) + 1, activeTotal)} of {activeTotal}</>
+                ) : (
+                  <>Loading mix...</>
+                )
+              ) : (
+                <>{activeUsed} / {activeTotal} phrases (session)</>
+              )}
             </h3>
           </div>
           {practiceMode === 1 && (
@@ -2515,7 +3045,7 @@ Keep it concise and structured, focusing on helping someone understand how the s
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <label style={{ fontSize: 12, color: '#666', fontWeight: 600 }}>Mode:</label>
               <select value={practiceMode} onChange={(e) => {
-                const val = parseInt(e.target.value || '1', 10);
+                const val = parseInt(e.target.value || '4', 10);
                 setPracticeMode(val);
                 try { localStorage.setItem('practice_mode', String(val)); } catch (_) {}
               }} style={{ padding: 4, border: '1px solid #ddd', borderRadius: 4 }}>
@@ -2523,6 +3053,21 @@ Keep it concise and structured, focusing on helping someone understand how the s
                 <option value={2}>Verb Practice</option>
                 <option value={3}>Conversations</option>
                 <option value={4}>Mix</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <label style={{ fontSize: 12, color: '#666', fontWeight: 600 }}>Text Size:</label>
+              <select value={textSize} onChange={(e) => {
+                const val = parseFloat(e.target.value || '1.0');
+                setTextSize(val);
+                try { localStorage.setItem('practice_textSize', String(val)); } catch (_) {}
+              }} style={{ padding: 4, border: '1px solid #ddd', borderRadius: 4 }}>
+                <option value={0.5}>50%</option>
+                <option value={0.6}>60%</option>
+                <option value={0.7}>70%</option>
+                <option value={0.8}>80%</option>
+                <option value={0.9}>90%</option>
+                <option value={1.0}>100%</option>
               </select>
             </div>
           </div>

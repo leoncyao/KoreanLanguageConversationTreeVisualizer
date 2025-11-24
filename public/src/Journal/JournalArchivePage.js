@@ -1,6 +1,6 @@
 import React from 'react';
-import { api } from './api';
-import { speakToAudio, cleanupAudioCache } from './audioTTS';
+import { api } from '../api';
+import { speakToAudio, cleanupAudioCache } from '../AudioLearning/audioTTS';
 
 function JournalArchivePage() {
   const [days, setDays] = React.useState([]);

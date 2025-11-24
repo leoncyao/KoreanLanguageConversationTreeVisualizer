@@ -1,6 +1,6 @@
 import React from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import './styles/TranslationPage.css';
+import '../Translation/TranslationPage.css';
 
 function ChatPage() {
   const [searchParams] = useSearchParams();
@@ -23,7 +23,9 @@ function ChatPage() {
 Original (user): ${input}
 Translation (ko): ${translation}
 Please include a clear breakdown of grammar (particles, tense, politeness), vocabulary with brief glosses, and any pronunciation notes.
-Keep it concise and structured for a learner.`;
+Keep it concise and structured for a learner.
+IMPORTANT: Do NOT include romanizations (like "naeil" or "mollayo") in your explanation. Only use Korean characters and English translations.
+Always explain in English.`;
       const res = await fetch((process.env.API_BASE_URL || '') + '/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -49,8 +51,8 @@ Keep it concise and structured for a learner.`;
     setChatInput('');
     try {
       const prompt = lastContext
-        ? `You are helping a learner understand a prior translation.\nOriginal: ${lastContext.input}\nTranslation (ko): ${lastContext.translation}\nUser question: ${q}\nAnswer clearly and concisely.`
-        : `User question: ${q}\nAnswer clearly and concisely for a Korean learner.`;
+        ? `You are helping a learner understand a prior translation.\nOriginal: ${lastContext.input}\nTranslation (ko): ${lastContext.translation}\nUser question: ${q}\nAnswer clearly and concisely. Always explain in English.`
+        : `User question: ${q}\nAnswer clearly and concisely for a Korean learner. Always explain in English.`;
       const res = await fetch((process.env.API_BASE_URL || '') + '/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

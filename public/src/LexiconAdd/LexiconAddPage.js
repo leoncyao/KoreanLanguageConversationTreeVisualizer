@@ -1,6 +1,6 @@
 import React from 'react';
-import { api } from './api';
-import './styles/App.css';
+import { api } from '../api';
+import '../styles/App.css';
 
 function LexiconAddPage() {
   const [text, setText] = React.useState('');

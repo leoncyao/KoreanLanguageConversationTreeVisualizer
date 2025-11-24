@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { api } from './api';
-import './styles/ModelSentence.css';
+import { api } from '../api';
+import './ModelSentence.css';
 
 function ModelSentence({ onModelUpdate }) {
   const [englishInput, setEnglishInput] = useState('');

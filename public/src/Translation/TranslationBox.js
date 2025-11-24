@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
-import { api } from './api';
-import { speakToAudio } from './audioTTS';
-import './styles/HomePage.css';
+import { api } from '../api';
+import { speakToAudio } from '../AudioLearning/audioTTS';
+import '../Home/HomePage.css';
 
 function TranslationBox({ onTranslated }) {
   const [freeInputValue, setFreeInputValue] = useState('');
@@ -111,8 +111,14 @@ function TranslationBox({ onTranslated }) {
   const handlePlaySound = async () => {
     if (!translatedValue) return;
     try {
-      // Play the translated text (Korean) using TTS
-      await speakToAudio(translatedValue, 'ko-KR', 1.0);
+      // Play the translated text (Korean) using TTS - play 3 times
+      for (let i = 0; i < 3; i++) {
+        await speakToAudio(translatedValue, 'ko-KR', 1.0);
+        // Small delay between plays (except after the last one)
+        if (i < 2) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+      }
     } catch (error) {
       console.error('Failed to play audio:', error);
     }

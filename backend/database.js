@@ -24,12 +24,15 @@ class Database {
         } else {
           console.log('Connected to SQLite database');
           // Enable foreign keys for CASCADE DELETE
-          this.db.run('PRAGMA foreign_keys = ON', (pragmaErr) => {
-            if (pragmaErr) {
-              console.warn('Warning: Could not enable foreign keys:', pragmaErr);
-            }
-            this.createTables().then(resolve).catch(reject);
-          });
+            this.db.run('PRAGMA foreign_keys = ON', (pragmaErr) => {
+              if (pragmaErr) {
+                console.warn('Warning: Could not enable foreign keys:', pragmaErr);
+              }
+              this.createTables()
+                .then(() => this.ensureMixStateColumns())
+                .then(resolve)
+                .catch(reject);
+            });
         }
       });
     });
@@ -259,6 +262,26 @@ class Database {
           UNIQUE(score_date) -- One score per day
         );
         CREATE INDEX IF NOT EXISTS idx_mix_scores_date ON mix_scores(score_date DESC);
+
+        -- Ensure mix_state has first_try_correct_count column (migration)
+        -- Check if column exists, add if missing
+        -- Note: SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we check first
+        -- This is done after table creation to handle existing databases
+        -- We'll run this check in ensureMixStateColumns() method
+
+        -- Explanations table: stores explanations for phrases (curriculum, conversation, verb practice, mix)
+        CREATE TABLE IF NOT EXISTS phrase_explanations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          phrase_id TEXT NOT NULL, -- Can be curriculum ID, conversation ID, verb practice ID, or mix item ID
+          phrase_type TEXT NOT NULL, -- 'curriculum', 'conversation', 'verb_practice', 'mix'
+          korean_text TEXT NOT NULL, -- Full Korean sentence (for lookup)
+          english_text TEXT NOT NULL, -- Full English sentence (for lookup)
+          explanation TEXT NOT NULL, -- The explanation text
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(phrase_id, phrase_type) -- One explanation per phrase
+        );
+        CREATE INDEX IF NOT EXISTS idx_phrase_explanations_lookup ON phrase_explanations(korean_text, english_text);
       `;
 
       this.db.exec(createTablesSQL, (err) => {
@@ -270,6 +293,7 @@ class Database {
           // Ensure tag columns exist on all word tables for existing DBs
           this.ensureTagColumns()
             .then(() => this.ensureCurriculumPhrasesColumns())
+            .then(() => this.ensureMixStateColumns())
             .then(() => this.seedDefaultGrammarRulesIfEmpty())
             .then(() => resolve())
             .catch((e) => {
@@ -398,11 +422,51 @@ class Database {
 
   async incrementMixFirstTryCorrect() {
     return new Promise((resolve, reject) => {
-      const sql = `UPDATE mix_state SET first_try_correct_count = COALESCE(first_try_correct_count, 0) + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1`;
-      this.db.run(sql, [], function(err) {
-        if (err) return reject(err);
-        resolve(this.changes > 0);
-      });
+      // First ensure the column exists
+      this.ensureMixStateColumns()
+        .then(() => {
+          const sql = `UPDATE mix_state SET first_try_correct_count = COALESCE(first_try_correct_count, 0) + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1`;
+          this.db.run(sql, [], function(err) {
+            if (err) return reject(err);
+            resolve(this.changes > 0);
+          });
+        })
+        .catch(reject);
+    });
+  }
+
+  async resetMixState() {
+    return new Promise((resolve, reject) => {
+      // First ensure the column exists
+      this.ensureMixStateColumns()
+        .then(() => {
+          // Use UPDATE to reset the index and first_try_correct_count
+          // Preserve the mix_items_json so we don't lose the mix items
+          const sql = `UPDATE mix_state SET current_index = 0, first_try_correct_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = 1`;
+          this.db.run(sql, [], function(err) {
+            if (err) {
+              // If update fails (no row exists), create it
+              if (err.message && err.message.includes('no such table')) {
+                // Table doesn't exist, will be created on next init
+                return reject(err);
+              }
+              // Try INSERT if UPDATE didn't affect any rows
+              if (this.changes === 0) {
+                const insertSql = `INSERT INTO mix_state (id, current_index, mix_items_json, first_try_correct_count, created_at, updated_at)
+                                   VALUES (1, 0, '[]', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`;
+                this.db.run(insertSql, [], function(insertErr) {
+                  if (insertErr) return reject(insertErr);
+                  resolve(true);
+                });
+              } else {
+                reject(err);
+              }
+            } else {
+              resolve(this.changes > 0);
+            }
+          });
+        })
+        .catch(reject);
     });
   }
 
@@ -1778,6 +1842,45 @@ class Database {
     });
   }
 
+  async ensureMixStateColumns() {
+    return new Promise((resolve, reject) => {
+      // Check if mix_state table exists
+      this.db.all(`SELECT name FROM sqlite_master WHERE type='table' AND name='mix_state'`, (err, tables) => {
+        if (err) return reject(err);
+        if (!tables || tables.length === 0) {
+          // Table doesn't exist, will be created by createTables
+          return resolve();
+        }
+        
+        // Table exists, check if first_try_correct_count column exists
+        this.db.all(`PRAGMA table_info(mix_state)`, (err, cols) => {
+          if (err) return reject(err);
+          const colNames = (cols || []).map(c => c.name);
+          if (!colNames.includes('first_try_correct_count')) {
+            // Add the missing column
+            this.db.run(`ALTER TABLE mix_state ADD COLUMN first_try_correct_count INTEGER DEFAULT 0`, (alterErr) => {
+              if (alterErr) {
+                // Check if error is because column already exists (race condition)
+                if (alterErr.message && alterErr.message.includes('duplicate column')) {
+                  console.log('Column first_try_correct_count already exists');
+                  return resolve();
+                }
+                console.warn('Warning: Could not add first_try_correct_count column:', alterErr);
+                // Don't reject - column might already exist from concurrent operation
+                return resolve();
+              } else {
+                console.log('✅ Added first_try_correct_count column to mix_state table');
+                resolve();
+              }
+            });
+          } else {
+            resolve();
+          }
+        });
+      });
+    });
+  }
+
   async incrementWordCorrect(koreanWord) {
     return new Promise((resolve, reject) => {
       const tables = [
@@ -1836,6 +1939,42 @@ class Database {
         });
       };
       updateNext(0);
+    });
+  }
+
+  // Save or update explanation for a phrase
+  async savePhraseExplanation(phraseId, phraseType, koreanText, englishText, explanation) {
+    return new Promise((resolve, reject) => {
+      const sql = `
+        INSERT OR REPLACE INTO phrase_explanations (phrase_id, phrase_type, korean_text, english_text, explanation, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `;
+      this.db.run(sql, [String(phraseId), String(phraseType), String(koreanText), String(englishText), String(explanation)], function(err) {
+        if (err) return reject(err);
+        resolve(this.lastID);
+      });
+    });
+  }
+
+  // Get explanation for a phrase
+  async getPhraseExplanation(phraseId, phraseType) {
+    return new Promise((resolve, reject) => {
+      const sql = `SELECT explanation FROM phrase_explanations WHERE phrase_id = ? AND phrase_type = ?`;
+      this.db.get(sql, [String(phraseId), String(phraseType)], (err, row) => {
+        if (err) return reject(err);
+        resolve(row ? row.explanation : null);
+      });
+    });
+  }
+
+  // Get explanation by Korean and English text (for cases where phrase_id might vary)
+  async getPhraseExplanationByText(koreanText, englishText) {
+    return new Promise((resolve, reject) => {
+      const sql = `SELECT explanation FROM phrase_explanations WHERE korean_text = ? AND english_text = ? LIMIT 1`;
+      this.db.get(sql, [String(koreanText), String(englishText)], (err, row) => {
+        if (err) return reject(err);
+        resolve(row ? row.explanation : null);
+      });
     });
   }
 

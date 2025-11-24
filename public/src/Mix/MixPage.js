@@ -1,13 +1,17 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { api } from './api';
-import { generateVerbPracticeSentence } from './verbPractice';
-import './styles/HomePage.css';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { api } from '../api';
+import { generateVerbPracticeSentence } from '../AudioLearning/verbPractice';
+import '../Home/HomePage.css';
 
 function MixPage() {
   const [mixState, setMixState] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [generating, setGenerating] = useState(false);
+  const fillExplanationsRunningRef = useRef(false);
+  const explanationsCheckedRef = useRef(false);
+  const loadMixStateRunningRef = useRef(false);
+  const mixStateLoadedRef = useRef(false);
 
   // Helper function to generate explanation for a sentence
   const generateExplanation = useCallback(async (korean, english) => {
@@ -17,7 +21,8 @@ Korean: ${korean}
 English: ${english}
 Please include a clear breakdown of grammar (particles, tense, politeness), vocabulary with brief glosses, and any important notes for a learner.
 Break down particles such as 은/는, 이/가, 을/를, 에, 에서, etc, verbs and their root forms, and pronouns
-Keep it concise and structured, focusing on helping someone understand how the sentence works.`;
+Keep it concise and structured, focusing on helping someone understand how the sentence works.
+IMPORTANT: Do NOT include romanizations (like "naeil" or "mollayo") in your explanation. Only use Korean characters and English translations.`;
       const res = await api.chat(prompt);
       if (res.ok) {
         const data = await res.json();
@@ -33,76 +38,146 @@ Keep it concise and structured, focusing on helping someone understand how the s
   const fillMissingExplanations = useCallback(async (mixItems) => {
     if (!Array.isArray(mixItems)) return;
     
-    let hasUpdates = false;
-    const updatedItems = [...mixItems];
-    
-    // Check each item for missing explanations
-    for (let i = 0; i < updatedItems.length; i++) {
-      const item = updatedItems[i];
-      if (!item || !item.data) continue;
-      
-      // Check if explanation is missing
-      const hasExplanation = item.data.explanation && item.data.explanation.trim().length > 0;
-      
-      if (!hasExplanation) {
-        let korean = '';
-        let english = '';
-        
-        // Extract Korean and English based on item type
-        if (item.type === 'curriculum') {
-          korean = item.data.korean_text || '';
-          english = item.data.english_text || '';
-        } else if (item.type === 'conversation') {
-          korean = item.data.korean || '';
-          english = item.data.english || '';
-        } else if (item.type === 'verb_practice') {
-          korean = item.data.korean_text || '';
-          english = item.data.english_text || '';
-        }
-        
-        // Generate explanation if we have both Korean and English
-        if (korean && english) {
-          console.log(`Generating explanation for mix item ${i + 1}/${updatedItems.length} (${item.type})`);
-          const explanation = await generateExplanation(korean, english);
-          if (explanation) {
-            updatedItems[i] = {
-              ...item,
-              data: {
-                ...item.data,
-                explanation: explanation
-              }
-            };
-            hasUpdates = true;
-            // Small delay to avoid rate limiting
-            await new Promise(resolve => setTimeout(resolve, 200));
-          }
-        }
-      }
+    // Prevent multiple simultaneous calls
+    if (fillExplanationsRunningRef.current) {
+      console.log('fillMissingExplanations already running, skipping...');
+      return;
     }
     
-    // Update mix state if we generated any explanations
-    if (hasUpdates) {
-      console.log(`Updating mix with ${updatedItems.length} items (added missing explanations)`);
-      try {
-        const updateRes = await api.updateMixItems(updatedItems);
-        if (updateRes.ok) {
-          console.log('Mix updated successfully with new explanations');
-          // Reload mix state to reflect updates
-          const res = await api.getMixState();
-          if (res.ok) {
-            const updatedState = await res.json();
-            setMixState(updatedState);
+    fillExplanationsRunningRef.current = true;
+    
+    try {
+      let hasUpdates = false;
+      const updatedItems = [...mixItems];
+      
+      // Check each item for missing explanations
+      for (let i = 0; i < updatedItems.length; i++) {
+        const item = updatedItems[i];
+        if (!item || !item.data) continue;
+        
+        // Check if explanation is missing
+        const hasExplanation = item.data.explanation && item.data.explanation.trim().length > 0;
+        
+        if (!hasExplanation) {
+          let korean = '';
+          let english = '';
+          
+          // Extract Korean and English based on item type
+          if (item.type === 'curriculum') {
+            korean = item.data.korean_text || '';
+            english = item.data.english_text || '';
+          } else if (item.type === 'conversation') {
+            korean = item.data.korean || '';
+            english = item.data.english || '';
+          } else if (item.type === 'verb_practice') {
+            korean = item.data.korean_text || '';
+            english = item.data.english_text || '';
           }
-        } else {
-          console.error('Failed to update mix items:', updateRes.status);
+          
+          // Generate explanation if we have both Korean and English
+          if (korean && english) {
+            console.log(`Generating explanation for mix item ${i + 1}/${updatedItems.length} (${item.type})`);
+            const explanation = await generateExplanation(korean, english);
+            if (explanation) {
+              updatedItems[i] = {
+                ...item,
+                data: {
+                  ...item.data,
+                  explanation: explanation
+                }
+              };
+              hasUpdates = true;
+              // Small delay to avoid rate limiting
+              await new Promise(resolve => setTimeout(resolve, 200));
+            }
+          }
         }
-      } catch (err) {
-        console.error('Error updating mix items:', err);
       }
-    } else {
-      console.log('All mix items already have explanations');
+      
+      // Update mix state if we generated any explanations
+      if (hasUpdates) {
+        console.log(`Updating mix with ${updatedItems.length} items (added missing explanations)`);
+        try {
+          const updateRes = await api.updateMixItems(updatedItems);
+          if (updateRes.ok) {
+            console.log('Mix updated successfully with new explanations');
+            // Don't reload state here - just update the database
+            // The user can manually refresh if needed, or we'll reload on next visit
+          } else {
+            console.error('Failed to update mix items:', updateRes.status);
+          }
+        } catch (err) {
+          console.error('Error updating mix items:', err);
+        }
+      } else {
+        console.log('All mix items already have explanations');
+      }
+    } finally {
+      fillExplanationsRunningRef.current = false;
     }
   }, [generateExplanation]);
+
+  // Store fillMissingExplanations in a ref to avoid dependency issues
+  const fillMissingExplanationsRef = useRef(fillMissingExplanations);
+  useEffect(() => {
+    fillMissingExplanationsRef.current = fillMissingExplanations;
+  }, [fillMissingExplanations]);
+
+  const loadMixState = useCallback(async () => {
+    // Prevent multiple simultaneous calls
+    if (loadMixStateRunningRef.current) {
+      console.log('loadMixState already running, skipping...');
+      return;
+    }
+    
+    loadMixStateRunningRef.current = true;
+    
+    try {
+      setLoading(true);
+      setError('');
+      const res = await api.getMixState();
+      if (!res.ok) {
+        if (res.status === 404) {
+          setMixState(null);
+          setLoading(false);
+          explanationsCheckedRef.current = false; // Reset when no mix exists
+          mixStateLoadedRef.current = true;
+          return;
+        }
+        throw new Error(`Failed to fetch mix state: ${res.status}`);
+      }
+      const data = await res.json();
+      setMixState(data);
+      mixStateLoadedRef.current = true;
+      
+      // Check and fill missing explanations only once per mix load
+      // Use a ref to track if we've already checked this mix
+      if (data && data.mix_items && Array.isArray(data.mix_items) && !explanationsCheckedRef.current) {
+        explanationsCheckedRef.current = true;
+        // Run asynchronously without blocking the UI - use ref to avoid dependency
+        fillMissingExplanationsRef.current(data.mix_items).catch(err => {
+          console.error('Error filling missing explanations:', err);
+          explanationsCheckedRef.current = false; // Reset on error so we can retry
+        });
+      }
+    } catch (e) {
+      console.error('Error loading mix state:', e);
+      setError(e instanceof Error ? e.message : 'Failed to load mix state');
+      explanationsCheckedRef.current = false; // Reset on error
+      mixStateLoadedRef.current = true; // Mark as loaded even on error to prevent retry loop
+    } finally {
+      setLoading(false);
+      loadMixStateRunningRef.current = false;
+    }
+  }, []); // No dependencies - use refs to access functions
+
+  useEffect(() => {
+    // Only load mix state once on mount
+    if (!mixStateLoadedRef.current) {
+      loadMixState();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array - only run once on mount
 
   const generateNewMix = useCallback(async () => {
     try {
@@ -328,6 +403,8 @@ Keep it concise and structured, focusing on helping someone understand how the s
       console.log(`Mix saved successfully: ${result.itemCount || mixItems.length} items`);
 
       // Reload mix state
+      explanationsCheckedRef.current = false; // Reset so explanations will be checked for new mix
+      mixStateLoadedRef.current = false; // Reset so we can load the new mix
       await loadMixState();
     } catch (e) {
       console.error('Error generating mix:', e);

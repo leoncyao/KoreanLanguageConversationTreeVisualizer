@@ -1,5 +1,5 @@
 // Shared verb practice generation algorithm for Level 2 / Verb Practice mode
-import { api } from './api';
+import { api } from '../api';
 
 /**
  * Generate a verb practice sentence using the Level 2 algorithm

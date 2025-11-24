@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { api } from './api';
-import './styles/Navbar.css';
+import { api } from '../api';
+import './Navbar.css';
 
 function Navbar() {
   const [muted, setMuted] = React.useState(() => {
@@ -37,7 +37,7 @@ function Navbar() {
   });
   const [navOrder, setNavOrder] = React.useState(() => {
     // Default order if config not loaded
-    return ['practice','mix','translate','audio','journal','curriculum','kpop','stats','pronunciation','chat','journal-entries','home'];
+    return ['practice','mix','scores','translate','audio','journal','curriculum','grammar','kpop','stats','pronunciation','chat','journal-entries','home'];
   });
   const [lastUpdated, setLastUpdated] = React.useState('');
   // Sidebar hidden by default on all devices
@@ -66,6 +66,14 @@ function Navbar() {
       return saved ? parseInt(saved, 10) : 3; // 1, 2, or 3
     } catch (_) {
       return 3;
+    }
+  });
+  const [practiceTextSize, setPracticeTextSize] = React.useState(() => {
+    try {
+      const saved = localStorage.getItem('practice_textSize');
+      return saved ? parseFloat(saved) : 1.0; // Default to 1.0 (100%)
+    } catch (_) {
+      return 1.0;
     }
   });
 
@@ -198,6 +206,7 @@ function Navbar() {
     home: { to: '/', label: 'Home', className: 'nav-item nav-item-desktop' },
     practice: { to: '/practice', label: 'Practice', className: 'nav-item nav-item-desktop' },
     mix: { to: '/mix', label: 'Mix', className: 'nav-item nav-item-desktop' },
+    scores: { to: '/scores', label: 'Scores', className: 'nav-item nav-item-desktop' },
     translate: { to: '/translate', label: 'Translate', className: 'nav-item nav-item-desktop' },
     audio: { to: '/audio-learning', label: 'Audio Learning', className: 'nav-item' },
     journal: { to: '/journal', label: 'Journal', className: 'nav-item nav-item-desktop' },
@@ -205,6 +214,7 @@ function Navbar() {
     kpop: { to: '/kpop-lyrics', label: 'K‑pop Lyrics', className: 'nav-item nav-item-desktop' },
     stats: { to: '/stats', label: 'Stats', className: 'nav-item nav-item-desktop' },
     pronunciation: { to: '/pronunciation', label: 'Pronunciation', className: 'nav-item nav-item-desktop' },
+    grammar: { to: '/grammar', label: 'Grammar', className: 'nav-item nav-item-desktop' },
     chat: { to: '/chat', label: 'Chat', className: 'nav-item nav-item-desktop' },
     'journal-entries': { to: '/journal-entries', label: 'Journal Entries', className: 'nav-item nav-item-desktop' },
   };
@@ -379,6 +389,27 @@ function Navbar() {
                 </select>
               </div>
               <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '0.5rem' }}>
+                <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Practice Text Size</span>
+                <select 
+                  value={practiceTextSize} 
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value || '1.0');
+                    setPracticeTextSize(val);
+                    try { localStorage.setItem('practice_textSize', String(val)); } catch (_) {}
+                    // Trigger a re-render by updating a state that PracticePage can read
+                    window.dispatchEvent(new Event('practice_textSize_changed'));
+                  }}
+                  style={{ padding: '6px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.9rem', width: '100%', maxWidth: '200px' }}
+                >
+                  <option value={0.5}>50%</option>
+                  <option value={0.6}>60%</option>
+                  <option value={0.7}>70%</option>
+                  <option value={0.8}>80%</option>
+                  <option value={0.9}>90%</option>
+                  <option value={1.0}>100%</option>
+                </select>
+              </div>
+              <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '0.5rem' }}>
                 <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Highlight English Words</span>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
                   <input
@@ -386,9 +417,9 @@ function Navbar() {
                     checked={(() => {
                       try {
                         const saved = localStorage.getItem('practice_highlight_english');
-                        return saved !== null ? saved === 'true' : true;
+                        return saved !== null ? saved === 'true' : false;
                       } catch (_) {
-                        return true;
+                        return false;
                       }
                     })()}
                     onChange={(e) => {

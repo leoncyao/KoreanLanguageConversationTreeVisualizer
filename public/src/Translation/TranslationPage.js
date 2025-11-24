@@ -1,8 +1,8 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { api } from './api';
+import { api } from '../api';
 import TranslationBox from './TranslationBox';
-import './styles/TranslationPage.css';
+import './TranslationPage.css';
 
 function TranslationPage() {
   const [lastContext, setLastContext] = React.useState(null); // {input, translation}
@@ -69,7 +69,8 @@ function TranslationPage() {
 Original (user): ${lastContext.input}
 Translation (ko): ${lastContext.translation}
 Please include a clear breakdown of grammar (particles, tense, politeness), vocabulary with brief glosses, and any pronunciation notes.
-Keep it concise and structured for a learner.`;
+Keep it concise and structured for a learner.
+IMPORTANT: Do NOT include romanizations (like "naeil" or "mollayo") in your explanation. Only use Korean characters and English translations.`;
         const res = await api.chat(prompt);
         if (!cancelled) {
           if (res.ok) {

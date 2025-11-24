@@ -7,6 +7,8 @@ let globalAudioState = {
   playCallback: null,
   pauseCallback: null,
   stopCallback: null,
+  nextTrackCallback: null,
+  previousTrackCallback: null,
   currentTitle: '',
   currentArtist: '',
   speechMonitoringInterval: null,
@@ -191,21 +193,48 @@ const initMediaSession = () => {
   } catch (_) {
     // Some browsers don't support these
   }
+
+  // Previous/Next track handlers for playlist navigation
+  try {
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+      console.log('MediaSession: Previous track');
+      if (globalAudioState.previousTrackCallback) {
+        globalAudioState.previousTrackCallback();
+      }
+    });
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+      console.log('MediaSession: Next track');
+      if (globalAudioState.nextTrackCallback) {
+        globalAudioState.nextTrackCallback();
+      }
+    });
+  } catch (err) {
+    console.warn('MediaSession previous/next track handlers not supported:', err);
+  }
 };
 
 // Update MediaSession metadata and state
 const updateMediaSession = (title, artist, playing = false, callbacks = {}) => {
   try {
     if ('mediaSession' in navigator) {
+      // Ensure title is set and not empty
+      const displayTitle = title && title.trim() ? title.trim() : 'Audio Learning';
+      const displayArtist = artist && artist.trim() ? artist.trim() : 'Korean Learning';
+      
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: title || 'Audio Learning',
-        artist: artist || 'Korean Learning',
+        title: displayTitle,
+        artist: displayArtist,
       });
+      
+      // Log for debugging
+      console.log('[MediaSession] Updated metadata:', { title: displayTitle, artist: displayArtist });
       
       // Update callbacks if provided
       if (callbacks.play) globalAudioState.playCallback = callbacks.play;
       if (callbacks.pause) globalAudioState.pauseCallback = callbacks.pause;
       if (callbacks.stop) globalAudioState.stopCallback = callbacks.stop;
+      if (callbacks.nexttrack) globalAudioState.nextTrackCallback = callbacks.nexttrack;
+      if (callbacks.previoustrack) globalAudioState.previousTrackCallback = callbacks.previoustrack;
       
       // Update playback state
       globalAudioState.isPlaying = playing;

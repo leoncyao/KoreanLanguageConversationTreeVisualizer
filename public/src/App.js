@@ -1,20 +1,21 @@
 import React from 'react';
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
-import Navbar from './Navbar';
-import HomePage from './HomePage';
-import TranslationPage from './TranslationPage';
-import ChatPage from './ChatPage';
-import StatsPage from './StatsPage';
-import GrammarPage from './GrammarPage';
-import PronunciationPage from './PronunciationPage';
-import AudioLearningPage from './AudioLearningPage';
-import CurriculumPage from './CurriculumPage';
-import PracticePage from './PracticePage';
-import MixPage from './MixPage';
-import JournalPage from './JournalPage';
-import JournalArchivePage from './JournalArchivePage';
-import LexiconAddPage from './LexiconAddPage';
-import KpopLyricsPage from './KpopLyricsPage';
+import Navbar from './Navbar/Navbar';
+import HomePage from './Home/HomePage';
+import TranslationPage from './Translation/TranslationPage';
+import ChatPage from './Chat/ChatPage';
+import StatsPage from './Stats/StatsPage';
+import GrammarPage from './Grammar/GrammarPage';
+import PronunciationPage from './Pronunciation/PronunciationPage';
+import AudioLearningPage from './AudioLearning/AudioLearningPage';
+import CurriculumPage from './Curriculum/CurriculumPage';
+import PracticePage from './Practice/PracticePage';
+import MixPage from './Mix/MixPage';
+import ScorePage from './Score/ScorePage';
+import JournalPage from './Journal/JournalPage';
+import JournalArchivePage from './Journal/JournalArchivePage';
+import LexiconAddPage from './LexiconAdd/LexiconAddPage';
+import KpopLyricsPage from './KpopLyrics/KpopLyricsPage';
 import './styles/App.css';
 
 function App() {
@@ -32,6 +33,7 @@ function App() {
         <Route path="/curriculum" element={<CurriculumPage />} />
         <Route path="/practice" element={<PracticePage />} />
         <Route path="/mix" element={<MixPage />} />
+        <Route path="/scores" element={<ScorePage />} />
         <Route path="/journal" element={<JournalPage />} />
         <Route path="/journal-entries" element={<JournalArchivePage />} />
         <Route path="/lexicon-add" element={<LexiconAddPage />} />

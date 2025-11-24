@@ -224,6 +224,19 @@ export const api = {
     body: JSON.stringify({ totalQuestions, firstTryCorrect })
   }),
   getMixScores: (limit = 30) => fetch(`${API_BASE_URL}/api/mix/scores?limit=${limit}`),
+  resetMixState: () => fetch(`${API_BASE_URL}/api/mix/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  }),
+
+  // Explanations
+  saveExplanation: (phraseId, phraseType, koreanText, englishText, explanation) => fetch(`${API_BASE_URL}/api/explanations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phraseId, phraseType, koreanText, englishText, explanation })
+  }),
+  getExplanation: (phraseId, phraseType) => fetch(`${API_BASE_URL}/api/explanations/${encodeURIComponent(phraseId)}/${encodeURIComponent(phraseType)}`),
+  getExplanationByText: (koreanText, englishText) => fetch(`${API_BASE_URL}/api/explanations/by-text?koreanText=${encodeURIComponent(koreanText)}&englishText=${encodeURIComponent(englishText)}`),
 
   // Version & Updates
   getVersion: () => fetch(`${API_BASE_URL}/api/version`),

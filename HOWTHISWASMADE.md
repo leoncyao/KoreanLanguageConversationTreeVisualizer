@@ -4565,6 +4565,25 @@ app.put('/api/mix/update-items', async (req, res) => {
 ```
 
 ### Edit: 2025-11-22
+- Files: `public/src/PracticePage.js`
+- Summary: Changed mix mode progress display from "X / Y phrases (session)" to "Item X of Y" to show current position in the mix
+- Rationale: User requested that the display show which place they are in the mix instead of the generic "phrases (session)" format. This makes it clearer for mix mode that it's showing position in the mix sequence.
+- Code refs:
+```2401:2409:public/src/PracticePage.js
+            <h3 style={{ margin: '4px 0 0 0', color: '#6b7280', fontWeight: 600 }}>
+              {practiceMode === 4 ? (
+                activeTotal > 0 ? (
+                  <>Item {activeUsed + 1} of {activeTotal}</>
+                ) : (
+                  <>Loading mix...</>
+                )
+              ) : (
+                <>{activeUsed} / {activeTotal} phrases (session)</>
+              )}
+            </h3>
+```
+
+### Edit: 2025-11-22
 - Files: `backend/number_converter.js`, `backend/translate.js`, `backend/chat.js`, `backend/generate.js`, `public/src/verbPractice.js`, `public/src/AudioLearningPage.js`
 - Summary: Added Korean number conversion system to translate Arabic numerals to Korean words (Sino-Korean for counting/dates, Native Korean for time/age/objects)
 - Rationale: User requested that numbers be translated into correct Korean words for speaking - using 구 (Sino-Korean) for counting and 아홉 (Native Korean) for times like 9시. This ensures proper Korean pronunciation in TTS and text generation.
@@ -4589,3 +4608,2517 @@ app.put('/api/mix/update-items', async (req, res) => {
       outputText = convertNumbersInKoreanText(outputText, prompt);
     }
 ```
+
+### Edit: 2025-11-22
+- Files: `public/src/PracticePage.js`
+- Summary: Removed punctuation requirement from blank answer comparisons - punctuation still appears in Korean display but is not required in user input
+- Rationale: User requested that punctuation not be required in blank answers, making it easier to type answers. Punctuation is still shown in the Korean sentence display for proper formatting, but users can answer without it.
+- Code refs:
+```1890:1895:public/src/PracticePage.js
+      const isCorrect = correctAnswers.some(ans => {
+        // Remove punctuation from comparison - user doesn't need to type punctuation
+        const removePunctuation = (str) => String(str || '').trim().replace(/[.,!?;:]/g, '');
+        const normalizedInput = removePunctuation(currentInput);
+        const normalizedAns = removePunctuation(ans);
+        return normalizedInput === normalizedAns;
+      });
+```
+```1898:1906:public/src/PracticePage.js
+        // Check if all blanks are filled (punctuation not required)
+        const removePunctuation = (str) => String(str || '').trim().replace(/[.,!?;:]/g, '');
+        const allBlanksFilled = inputValues.length === blankPhrase.blanks.length && 
+                                inputValues.every((val, idx) => {
+                                  const ans = blankPhrase.correct_answers[idx] || blankPhrase.blanks[idx];
+                                  // Remove punctuation from comparison - user doesn't need to type punctuation
+                                  const normalizedVal = removePunctuation(val);
+                                  const normalizedAns = removePunctuation(ans);
+                                  return normalizedVal === normalizedAns;
+                                });
+```
+
+### Edit: 2025-11-22
+- Files: `backend/database.js`, `backend/server.js`, `public/src/api.js`, `public/src/PracticePage.js`
+- Summary: Added database storage for phrase explanations to prevent duplicate AI API calls when clicking explain multiple times
+- Rationale: User reported that clicking explain twice makes new API chat calls. Now explanations are saved to database and retrieved on subsequent clicks, avoiding unnecessary AI API calls.
+
+### Edit: 2025-11-22
+- Files: `public/src/PracticePage.js`
+- Summary: Fixed mix mode progress display stuck on "Loading mix..." by adding mixState to activeSessionData dependency array
+- Rationale: User reported that mix progress was stuck showing "Loading mix..." instead of showing current position. The issue was that activeSessionData useMemo didn't include mixState in its dependency array, so it wasn't recalculating when mixState loaded.
+- Code refs:
+```241:241:public/src/PracticePage.js
+  }, [practiceMode, sessionPhrases, allPhrases, verbPracticeSession, conversationSession, usedPhraseIds, mixState]);
+```
+
+### Edit: 2025-11-22
+- Files: `public/src/TranslationBox.js`
+- Summary: Modified sound button to play translation 3 times instead of once
+- Rationale: User requested that clicking the sound button should play the translation 3 times for better learning/reinforcement.
+- Code refs:
+```111:121:public/src/TranslationBox.js
+  const handlePlaySound = async () => {
+    if (!translatedValue) return;
+    try {
+      // Play the translated text (Korean) using TTS - play 3 times
+      for (let i = 0; i < 3; i++) {
+        await speakToAudio(translatedValue, 'ko-KR', 1.0);
+        // Small delay between plays (except after the last one)
+        if (i < 2) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+      }
+    } catch (error) {
+      console.error('Failed to play audio:', error);
+    }
+  };
+```
+
+### Edit: 2025-01-22
+- Files: `public/src/MixPage.js`
+- Summary: Fixed infinite loop causing repeated chat API calls when loading mix page. Added multiple refs to prevent loops: `fillExplanationsRunningRef` to prevent multiple simultaneous calls to `fillMissingExplanations`, `explanationsCheckedRef` to track if explanations have already been checked, `loadMixStateRunningRef` to prevent multiple simultaneous calls to `loadMixState`, and `mixStateLoadedRef` to track if mix state has been loaded. Removed `setMixState` call from `fillMissingExplanations` to break the dependency loop. Changed `loadMixState` to use empty dependency array and access `fillMissingExplanations` via ref to avoid dependency chain issues. Changed `useEffect` that calls `loadMixState` to only run once on mount with empty dependency array.
+- Rationale: When clicking on the mix page, `fillMissingExplanations` was being called repeatedly, causing an infinite loop of chat API requests that overwhelmed the backend and resulted in rate limit errors (429) and 502 Bad Gateway errors. The loop was caused by multiple factors: (1) `fillMissingExplanations` calling `setMixState`, which triggered `loadMixState` again, (2) `loadMixState` depending on `fillMissingExplanations`, causing it to be recreated whenever `fillMissingExplanations` changed, (3) the `useEffect` depending on `loadMixState`, causing it to rerun whenever `loadMixState` was recreated. The fix breaks all these dependency chains using refs and ensuring functions only run once.
+- Code refs:
+```6:13:public/src/MixPage.js
+  const [generating, setGenerating] = useState(false);
+  const fillExplanationsRunningRef = useRef(false);
+  const explanationsCheckedRef = useRef(false);
+  const loadMixStateRunningRef = useRef(false);
+  const mixStateLoadedRef = useRef(false);
+```
+
+```119:124:public/src/MixPage.js
+  // Store fillMissingExplanations in a ref to avoid dependency issues
+  const fillMissingExplanationsRef = useRef(fillMissingExplanations);
+  useEffect(() => {
+    fillMissingExplanationsRef.current = fillMissingExplanations;
+  }, [fillMissingExplanations]);
+```
+
+```33:105:public/src/MixPage.js
+  const fillMissingExplanations = useCallback(async (mixItems) => {
+    if (!Array.isArray(mixItems)) return;
+    
+    // Prevent multiple simultaneous calls
+    if (fillExplanationsRunningRef.current) {
+      console.log('fillMissingExplanations already running, skipping...');
+      return;
+    }
+    
+    fillExplanationsRunningRef.current = true;
+    
+    try {
+      // ... explanation generation logic ...
+      // Update mix state if we generated any explanations
+      if (hasUpdates) {
+        console.log(`Updating mix with ${updatedItems.length} items (added missing explanations)`);
+        try {
+          const updateRes = await api.updateMixItems(updatedItems);
+          if (updateRes.ok) {
+            console.log('Mix updated successfully with new explanations');
+            // Don't reload state here - just update the database
+            // The user can manually refresh if needed, or we'll reload on next visit
+          } else {
+            console.error('Failed to update mix items:', updateRes.status);
+          }
+        } catch (err) {
+          console.error('Error updating mix items:', err);
+        }
+      } else {
+        console.log('All mix items already have explanations');
+      }
+    } finally {
+      fillExplanationsRunningRef.current = false;
+    }
+  }, [generateExplanation]);
+```
+
+```125:171:public/src/MixPage.js
+  const loadMixState = useCallback(async () => {
+    // Prevent multiple simultaneous calls
+    if (loadMixStateRunningRef.current) {
+      console.log('loadMixState already running, skipping...');
+      return;
+    }
+    
+    loadMixStateRunningRef.current = true;
+    
+    try {
+      setLoading(true);
+      setError('');
+      const res = await api.getMixState();
+      if (!res.ok) {
+        if (res.status === 404) {
+          setMixState(null);
+          setLoading(false);
+          explanationsCheckedRef.current = false; // Reset when no mix exists
+          mixStateLoadedRef.current = true;
+          return;
+        }
+        throw new Error(`Failed to fetch mix state: ${res.status}`);
+      }
+      const data = await res.json();
+      setMixState(data);
+      mixStateLoadedRef.current = true;
+      
+      // Check and fill missing explanations only once per mix load
+      // Use a ref to track if we've already checked this mix
+      if (data && data.mix_items && Array.isArray(data.mix_items) && !explanationsCheckedRef.current) {
+        explanationsCheckedRef.current = true;
+        // Run asynchronously without blocking the UI - use ref to avoid dependency
+        fillMissingExplanationsRef.current(data.mix_items).catch(err => {
+          console.error('Error filling missing explanations:', err);
+          explanationsCheckedRef.current = false; // Reset on error so we can retry
+        });
+      }
+    } catch (e) {
+      console.error('Error loading mix state:', e);
+      setError(e instanceof Error ? e.message : 'Failed to load mix state');
+      explanationsCheckedRef.current = false; // Reset on error
+      mixStateLoadedRef.current = true; // Mark as loaded even on error to prevent retry loop
+    } finally {
+      setLoading(false);
+      loadMixStateRunningRef.current = false;
+    }
+  }, []); // No dependencies - use refs to access functions
+```
+
+```173:177:public/src/MixPage.js
+  useEffect(() => {
+    // Only load mix state once on mount
+    if (!mixStateLoadedRef.current) {
+      loadMixState();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array - only run once on mount
+```
+
+### Edit: 2025-01-22
+- Files: `public/src/ScorePage.js`, `public/src/PracticePage.js`, `public/src/App.js`, `public/nav-order.json`, `backend/server.js`, `backend/database.js`, `public/src/api.js`
+- Summary: Added score tracking and display for mix practice. Created ScorePage component to display daily mix scores. Updated PracticePage to track first-try correct answers (without clicking "Show Answer") and save scores when mix completes. Added API endpoint to reset mix state. Added route and navigation link for ScorePage.
+- Rationale: User requested that when mix completes, the score (number of correct answers on first try without clicking "Show Answer") should be stored in the database and displayed in a score page with the current date. The mix should then reset to question 1 and the first_try_correct_count should reset to 0.
+- Code refs:
+```1:95:public/src/ScorePage.js
+import React, { useState, useEffect } from 'react';
+import { api } from './api';
+import './styles/HomePage.css';
+
+function ScorePage() {
+  const [scores, setScores] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const loadScores = async () => {
+      try {
+        setLoading(true);
+        setError('');
+        const res = await api.getMixScores(30);
+        if (!res.ok) {
+          throw new Error(`Failed to fetch scores: ${res.status}`);
+        }
+        const data = await res.json();
+        setScores(Array.isArray(data) ? data : []);
+      } catch (e) {
+        console.error('Error loading scores:', e);
+        setError(e instanceof Error ? e.message : 'Failed to load scores');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadScores();
+  }, []);
+
+  const formatDate = (dateString) => {
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      });
+    } catch (e) {
+      return dateString;
+    }
+  };
+
+  const calculatePercentage = (firstTryCorrect, totalQuestions) => {
+    if (!totalQuestions || totalQuestions === 0) return 0;
+    return Math.round((firstTryCorrect / totalQuestions) * 100);
+  };
+  // ... rest of component renders score cards with date, total questions, first try correct, and accuracy percentage
+```
+
+```1973:1980:public/src/PracticePage.js
+        if (allBlanksFilled) {
+          // All blanks are correct!
+          setFeedback('All correct! Great job!');
+          
+          // Track first-try correct for mix mode (only if user didn't click "Show Answer")
+          if (practiceMode === 4 && !showAnswer && !showAnswerBelow) {
+            try {
+              await api.incrementMixFirstTryCorrect();
+            } catch (err) {
+              console.error('Failed to increment first try correct:', err);
+            }
+          }
+```
+
+```2197:2235:public/src/PracticePage.js
+                  } else {
+                    // Mix completed! Save score and reset mix
+                    (async () => {
+                      try {
+                        // Get final mix state to get first_try_correct_count
+                        const res = await api.getMixState();
+                        if (res.ok) {
+                          const finalState = await res.json();
+                          const totalQuestions = finalState.mix_items?.length || 0;
+                          const firstTryCorrect = finalState.first_try_correct_count || 0;
+                          
+                          // Save score
+                          if (totalQuestions > 0) {
+                            await api.saveMixScore(totalQuestions, firstTryCorrect);
+                            console.log(`Mix score saved: ${firstTryCorrect}/${totalQuestions}`);
+                          }
+                          
+                          // Reset mix state (index to 0, first_try_correct_count to 0)
+                          await api.resetMixState();
+                          
+                          // Reload mix state to reflect reset
+                          const reloadRes = await api.getMixState();
+                          if (reloadRes.ok) {
+                            const resetState = await reloadRes.json();
+                            setMixState(resetState);
+                          }
+                          
+                          setFeedback(`Mix completed! Score: ${firstTryCorrect}/${totalQuestions} (${Math.round((firstTryCorrect / totalQuestions) * 100)}%). Mix reset to question 1.`);
+                        }
+                      } catch (err) {
+                        console.error('Error saving score and resetting mix:', err);
+                        setFeedback('Mix completed! (Error saving score)');
+                      }
+                    })();
+                  }
+```
+
+```422:432:backend/database.js
+  async resetMixState() {
+    return new Promise((resolve, reject) => {
+      const sql = `UPDATE mix_state SET current_index = 0, first_try_correct_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = 1`;
+      this.db.run(sql, [], function(err) {
+        if (err) return reject(err);
+        resolve(this.changes > 0);
+      });
+    });
+  }
+```
+
+```256:264:backend/server.js
+app.post('/api/mix/reset', async (req, res) => {
+  try {
+    const updated = await db.resetMixState();
+    res.json({ success: true, updated });
+  } catch (error) {
+    console.error('Error resetting mix state:', error);
+    res.status(500).json({ error: 'Failed to reset mix state' });
+  }
+});
+```
+
+- DB changes: Uses existing `mix_scores` table to store daily scores. `resetMixState` resets `current_index` and `first_try_correct_count` in `mix_state` table.
+- API endpoints: Added `POST /api/mix/reset` to reset mix state (index to 0, first_try_correct_count to 0).
+
+### Edit: 2025-01-22
+- Files: `public/src/PracticePage.js`
+- Summary: Fixed mix reset to properly load the first question after completion. Added delay after reset to ensure database update completes before reloading. Fixed index display to prevent showing incorrect numbers. Updated `reloadMixState` to use explicit `currentIndex` variable.
+- Rationale: After mix completion and reset, the first question wasn't displaying correctly and the current index wasn't being updated in the UI. The issue was that `reloadMixState` needed to properly handle the reset state and ensure the first question loads.
+- Code refs:
+```860:863:public/src/PracticePage.js
+            // Load current item at current_index directly (no skipping)
+            // After reset, current_index should be 0, so we load the first item
+            const currentIndex = state.current_index || 0;
+            if (currentIndex < state.mix_items.length) {
+```
+
+```2257:2263:public/src/PracticePage.js
+                          // Reset mix state (index to 0, first_try_correct_count to 0)
+                          await api.resetMixState();
+                          
+                          // Small delay to ensure database update is complete
+                          await new Promise(resolve => setTimeout(resolve, 100));
+                          
+                          // Reload mix state to reflect reset and load first question
+                          await reloadMixState();
+```
+
+```2546:2548:public/src/PracticePage.js
+              {practiceMode === 4 ? (
+                activeTotal > 0 ? (
+                  <>Item {Math.min(activeUsed + 1, activeTotal)} of {activeTotal}</>
+```
+
+### Edit: 2025-01-22
+- Files: `public/src/Navbar.js`
+- Summary: Added "Scores" navigation item to the navbar. Added `scores` to the `items` object and to the default `navOrder` array.
+- Rationale: User requested to add the scores page to the navigation bar so it's easily accessible.
+- Code refs:
+```197:210:public/src/Navbar.js
+  const items = {
+    home: { to: '/', label: 'Home', className: 'nav-item nav-item-desktop' },
+    practice: { to: '/practice', label: 'Practice', className: 'nav-item nav-item-desktop' },
+    mix: { to: '/mix', label: 'Mix', className: 'nav-item nav-item-desktop' },
+    scores: { to: '/scores', label: 'Scores', className: 'nav-item nav-item-desktop' },
+    translate: { to: '/translate', label: 'Translate', className: 'nav-item nav-item-desktop' },
+    // ... rest of items
+  };
+```
+
+```38:41:public/src/Navbar.js
+  const [navOrder, setNavOrder] = React.useState(() => {
+    // Default order if config not loaded
+    return ['practice','mix','scores','translate','audio','journal','curriculum','kpop','stats','pronunciation','chat','journal-entries','home'];
+  });
+```
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`, `public/src/MixPage.js`, `public/src/TranslationPage.js`, `public/src/ChatPage.js`
+- Summary: Updated all explanation generation prompts to explicitly instruct the AI not to include romanizations (like "naeil" or "mollayo") in explanations. Only Korean characters and English translations should be used.
+- Rationale: User requested that explanations should not include romanizations, as they are not helpful for learning and clutter the explanation text.
+- Code refs:
+```1709:1714:public/src/PracticePage.js
+      const prompt = `Explain this Korean sentence in detail.
+Korean: ${fullKorean}
+English: ${english}
+Please include a clear breakdown of grammar (particles, tense, politeness), vocabulary with brief glosses, and any important notes for a learner.
+Break down particles such as 은/는, 이/가, 을/를, 에, 에서, etc, verbs and their root forms, and pronouns
+Keep it concise and structured, focusing on helping someone understand how the sentence works.
+IMPORTANT: Do NOT include romanizations (like "naeil" or "mollayo") in your explanation. Only use Korean characters and English translations.`;
+```
+
+```19:24:public/src/MixPage.js
+      const prompt = `Explain this Korean sentence in detail.
+Korean: ${korean}
+English: ${english}
+Please include a clear breakdown of grammar (particles, tense, politeness), vocabulary with brief glosses, and any important notes for a learner.
+Break down particles such as 은/는, 이/가, 을/를, 에, 에서, etc, verbs and their root forms, and pronouns
+Keep it concise and structured, focusing on helping someone understand how the sentence works.
+IMPORTANT: Do NOT include romanizations (like "naeil" or "mollayo") in your explanation. Only use Korean characters and English translations.`;
+```
+
+```68:72:public/src/TranslationPage.js
+        const prompt = `Explain the Korean translation in detail.
+Original (user): ${lastContext.input}
+Translation (ko): ${lastContext.translation}
+Please include a clear breakdown of grammar (particles, tense, politeness), vocabulary with brief glosses, and any pronunciation notes.
+Keep it concise and structured for a learner.
+IMPORTANT: Do NOT include romanizations (like "naeil" or "mollayo") in your explanation. Only use Korean characters and English translations.`;
+```
+
+```22:26:public/src/ChatPage.js
+      const prompt = `Explain the Korean translation in detail.
+Original (user): ${input}
+Translation (ko): ${translation}
+Please include a clear breakdown of grammar (particles, tense, politeness), vocabulary with brief glosses, and any pronunciation notes.
+Keep it concise and structured for a learner.
+IMPORTANT: Do NOT include romanizations (like "naeil" or "mollayo") in your explanation. Only use Korean characters and English translations.`;
+```
+
+### Edit: 2025-01-27
+- Files: `backend/database.js`, `public/src/PracticePage.js`
+- Summary: Added migration function `ensureMixStateColumns()` to check and add the `first_try_correct_count` column to the `mix_state` table if it doesn't exist. Updated `resetMixState()` to use `UPDATE` instead of `INSERT OR REPLACE` and to ensure the column exists before resetting. Added index validation in `reloadMixState()` to prevent out-of-bounds index values and automatically fix invalid indices.
+- Rationale: The `first_try_correct_count` column was missing from existing databases, causing 500 errors when trying to increment or reset the mix state. The reset function was also not correctly resetting the index to 0. Additionally, the mix index could become invalid (out of bounds) after reset, causing display issues.
+- Code refs:
+```423:430:backend/database.js
+  async ensureMixStateColumns() {
+    return new Promise((resolve, reject) => {
+      // Check if mix_state table exists
+      this.db.all(`SELECT name FROM sqlite_master WHERE type='table' AND name='mix_state'`, (err, tables) => {
+        if (err) return reject(err);
+        if (!tables || tables.length === 0) {
+          // Table doesn't exist, will be created by createTables
+          return resolve();
+        }
+        
+        // Table exists, check if first_try_correct_count column exists
+        this.db.all(`PRAGMA table_info(mix_state)`, (err, cols) => {
+          if (err) return reject(err);
+          const colNames = (cols || []).map(c => c.name);
+          if (!colNames.includes('first_try_correct_count')) {
+            // Add the missing column
+            this.db.run(`ALTER TABLE mix_state ADD COLUMN first_try_correct_count INTEGER DEFAULT 0`, (alterErr) => {
+              if (alterErr) {
+                console.warn('Warning: Could not add first_try_correct_count column:', alterErr);
+                // Don't reject - column might already exist from concurrent operation
+              } else {
+                console.log('✅ Added first_try_correct_count column to mix_state table');
+              }
+              resolve();
+            });
+          } else {
+            resolve();
+          }
+        });
+      });
+    });
+  }
+```
+
+```432:461:backend/database.js
+  async resetMixState() {
+    return new Promise((resolve, reject) => {
+      // First ensure the column exists
+      this.ensureMixStateColumns()
+        .then(() => {
+          // Use UPDATE to reset the index and first_try_correct_count
+          // Preserve the mix_items_json so we don't lose the mix items
+          const sql = `UPDATE mix_state SET current_index = 0, first_try_correct_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = 1`;
+          this.db.run(sql, [], function(err) {
+            if (err) {
+              // If update fails (no row exists), create it
+              if (err.message && err.message.includes('no such table')) {
+                // Table doesn't exist, will be created on next init
+                return reject(err);
+              }
+              // Try INSERT if UPDATE didn't affect any rows
+              if (this.changes === 0) {
+                const insertSql = `INSERT INTO mix_state (id, current_index, mix_items_json, first_try_correct_count, created_at, updated_at)
+                                   VALUES (1, 0, '[]', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`;
+                this.db.run(insertSql, [], function(insertErr) {
+                  if (insertErr) return reject(insertErr);
+                  resolve(true);
+                });
+              } else {
+                reject(err);
+              }
+            } else {
+              resolve(this.changes > 0);
+            }
+          });
+        })
+        .catch(reject);
+    });
+  }
+```
+
+```874:884:public/src/PracticePage.js
+            // Load current item at current_index directly (no skipping)
+            // After reset, current_index should be 0, so we load the first item
+            let currentIndex = typeof state.current_index === 'number' ? state.current_index : 0;
+            // Ensure index is valid (0 to length-1)
+            if (currentIndex < 0) currentIndex = 0;
+            if (currentIndex >= state.mix_items.length) {
+              console.warn('currentIndex out of bounds, resetting to 0. currentIndex:', currentIndex, 'length:', state.mix_items.length);
+              currentIndex = 0;
+              // Update the database to fix the invalid index
+              api.updateMixIndex(0).catch(err => console.error('Failed to fix index:', err));
+            }
+            console.log('reloadMixState - currentIndex:', currentIndex, 'total items:', state.mix_items.length, 'state.current_index:', state.current_index);
+            if (currentIndex < state.mix_items.length) {
+              const currentItem = state.mix_items[currentIndex];
+              console.log('Loading phrase at index', currentIndex, 'directly (no skipping)');
+```
+- DB changes: Added migration logic to ensure `first_try_correct_count` column exists in `mix_state` table. The column is added via `ALTER TABLE` if missing.
+
+### Edit: 2025-01-27
+- Files: `backend/database.js`
+- Summary: Added the missing `ensureMixStateColumns()` function definition that was being called but didn't exist. The function checks if the `mix_state` table exists and if the `first_try_correct_count` column exists, adding it if missing. Also updated `incrementMixFirstTryCorrect()` to call `ensureMixStateColumns()` before attempting to update the column.
+- Rationale: The `ensureMixStateColumns()` function was being called in multiple places but was never actually defined, causing 500 errors when trying to increment or reset the mix state. The function now properly handles migration for existing databases.
+- Code refs:
+```1843:1875:backend/database.js
+  async ensureMixStateColumns() {
+    return new Promise((resolve, reject) => {
+      // Check if mix_state table exists
+      this.db.all(`SELECT name FROM sqlite_master WHERE type='table' AND name='mix_state'`, (err, tables) => {
+        if (err) return reject(err);
+        if (!tables || tables.length === 0) {
+          // Table doesn't exist, will be created by createTables
+          return resolve();
+        }
+        
+        // Table exists, check if first_try_correct_count column exists
+        this.db.all(`PRAGMA table_info(mix_state)`, (err, cols) => {
+          if (err) return reject(err);
+          const colNames = (cols || []).map(c => c.name);
+          if (!colNames.includes('first_try_correct_count')) {
+            // Add the missing column
+            this.db.run(`ALTER TABLE mix_state ADD COLUMN first_try_correct_count INTEGER DEFAULT 0`, (alterErr) => {
+              if (alterErr) {
+                // Check if error is because column already exists (race condition)
+                if (alterErr.message && alterErr.message.includes('duplicate column')) {
+                  console.log('Column first_try_correct_count already exists');
+                  return resolve();
+                }
+                console.warn('Warning: Could not add first_try_correct_count column:', alterErr);
+                // Don't reject - column might already exist from concurrent operation
+                return resolve();
+              } else {
+                console.log('✅ Added first_try_correct_count column to mix_state table');
+                resolve();
+              }
+            });
+          } else {
+            resolve();
+          }
+        });
+      });
+    });
+  }
+```
+
+```423:435:backend/database.js
+  async incrementMixFirstTryCorrect() {
+    return new Promise((resolve, reject) => {
+      // First ensure the column exists
+      this.ensureMixStateColumns()
+        .then(() => {
+          const sql = `UPDATE mix_state SET first_try_correct_count = COALESCE(first_try_correct_count, 0) + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1`;
+          this.db.run(sql, [], function(err) {
+            if (err) return reject(err);
+            resolve(this.changes > 0);
+          });
+        })
+        .catch(reject);
+    });
+  }
+```
+- DB changes: The `ensureMixStateColumns()` function now properly migrates existing databases by adding the `first_try_correct_count` column if it doesn't exist.
+
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Removed explanation clearing when moving to new questions; updated explanation prompt to prioritize consonant/vowel ending rules (받침 rules).
+- Rationale: UX improvement - users can now see previous explanation while new one loads, and better grammar explanations focusing on 받침-based rules which are fundamental to Korean grammar.
+- Code refs:
+```906:909:public/src/PracticePage.js
+                setRandomBlankIndices(chosen.sort((a, b) => a - b));
+                setInputValues(new Array(chosen.length).fill(''));
+                setCurrentBlankIndex(0);
+                // Keep explanation from previous question - don't clear it
+```
+
+```1708:1720:public/src/PracticePage.js
+      // If not in database, generate explanation via AI
+      const prompt = `Explain this Korean sentence in detail.
+Korean: ${fullKorean}
+English: ${english}
+
+IMPORTANT: Start by highlighting any grammar rules involving endings based on consonant/vowel (받침 rules). This includes:
+- Whether a stem ends with a consonant (받침) or vowel (no 받침)
+- How endings change based on 받침 presence (e.g., 은/는, 이/가, 을/를, 아요/어요, 았어요/었어요)
+- Consonant assimilation rules (e.g., ㄷ irregular verbs, ㅂ irregular verbs, ㄹ irregular verbs)
+- Vowel harmony rules (bright vs dark vowels affecting ending choice)
+- Any 받침-related sound changes or contractions
+
+Then include a clear breakdown of:
+- Particles (은/는, 이/가, 을/를, 에, 에서, etc.) and their functions
+- Tense and politeness levels
+- Vocabulary with brief glosses
+- Verb/adjective root forms and conjugations
+- Pronouns and their usage
+- Any other important grammar points
+
+Keep it concise and structured, focusing on helping someone understand how the sentence works.
+IMPORTANT: Do NOT include romanizations (like "naeil" or "mollayo") in your explanation. Only use Korean characters and English translations.`;
+```
+
+- Changes made in multiple locations: removed `setExplanationText('')`, `setExplanationPhraseId(null)`, and `setShowExplanation(false)` calls from:
+  - `reloadMixState` function (line ~907-909)
+  - `fetchRandomPhrase` for verb practice mode (line ~1426-1428)
+  - `fetchRandomPhrase` for mix mode random repeat (line ~1462-1464)
+  - `fetchRandomPhrase` for mix mode current item (line ~1501-1503)
+  - `fetchRandomPhrase` for conversation mode (line ~1534-1536)
+  - `fetchRandomPhrase` for curriculum mode (line ~1608-1610)
+  - `handleSkip` for mix mode (line ~1891-1893)
+  - `handleKeyDown` proceedToNext for mix mode (line ~2288-2290)
+- The explanation prompt now explicitly instructs AI to start with 받침-based grammar rules before other grammar points.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Fixed explanation saving to database by adding proper response status checking and detailed error logging.
+- Rationale: Bug fix - explanations weren't being saved because the code wasn't checking if the API response was OK. The fetch API doesn't throw errors for HTTP error status codes, so errors were being silently ignored.
+- Code refs:
+```1724:1730:public/src/PracticePage.js
+        // Save explanation to database for future use
+        try {
+          console.log('[Explanation] Attempting to save explanation:', { phraseId, phraseType, koreanLength: fullKorean.length, englishLength: english.length, explanationLength: text.length });
+          const saveRes = await api.saveExplanation(phraseId, phraseType, fullKorean, english, text);
+          if (saveRes.ok) {
+            console.log('[Explanation] ✓ Successfully saved explanation to database');
+          } else {
+            const errorText = await saveRes.text().catch(() => 'Unknown error');
+            console.error('[Explanation] ✗ Failed to save explanation:', saveRes.status, errorText);
+          }
+        } catch (saveErr) {
+          console.error('[Explanation] ✗ Exception while saving explanation to database:', saveErr);
+          // Don't fail the request if saving fails
+        }
+```
+
+```1685:1695:public/src/PracticePage.js
+              // Also save it with the current phrase ID for future lookups
+              try {
+                console.log('[Explanation] Attempting to save explanation from text lookup:', { phraseId, phraseType });
+                const saveRes = await api.saveExplanation(phraseId, phraseType, fullKorean, english, textData.explanation);
+                if (saveRes.ok) {
+                  console.log('[Explanation] ✓ Successfully saved explanation from text lookup');
+                } else {
+                  const errorText = await saveRes.text().catch(() => 'Unknown error');
+                  console.error('[Explanation] ✗ Failed to save explanation from text lookup:', saveRes.status, errorText);
+                }
+              } catch (saveErr) {
+                console.error('[Explanation] ✗ Exception while saving explanation from text lookup:', saveErr);
+              }
+```
+- The code now properly checks `saveRes.ok` before considering the save successful, and logs detailed error information including HTTP status codes and error messages.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Added "Ask Questions" button next to explanation that opens the chat page with the current sentence context for follow-up questions.
+- Rationale: UX improvement - allows users to continue asking questions about the explanation in a dedicated chat interface.
+- Code refs:
+```1:4:public/src/PracticePage.js
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Link } from 'react-router-dom';
+import { api } from './api';
+import { generateVerbPracticeSentence } from './verbPractice';
+```
+
+```2547:2570:public/src/PracticePage.js
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="regenerate-button"
+              onClick={() => { setExplanationText(''); setExplanationPhraseId(null); fetchExplanation(); }}
+              title="Explain the current sentence"
+            >
+              Explain
+            </button>
+            {explanationText && currentPhrase && blankPhrase && (() => {
+              const fullKorean = getFullKoreanSentence();
+              const english = blankPhrase.translation || currentPhrase.english_text || '';
+              return fullKorean && english ? (
+                <Link
+                  to={`/chat?input=${encodeURIComponent(english)}&translation=${encodeURIComponent(fullKorean)}`}
+                  className="regenerate-button"
+                  style={{ textDecoration: 'none', display: 'inline-block' }}
+                  title="Open in chat to ask follow-up questions about this explanation"
+                >
+                  Ask Questions
+                </Link>
+              ) : null;
+            })()}
+          </div>
+```
+- The button only appears when an explanation is loaded and both Korean and English text are available. It navigates to `/chat` with the English text as `input` and Korean text as `translation` query parameters, which the ChatPage uses to provide context for follow-up questions.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Removed "Explain" button, moved "Ask Questions" button to bottom of explanation, and updated explanation prompt to be more concise (under 15 lines) with specific format including 받침 rules and table-formatted verb conjugations.
+- Rationale: UX improvement - cleaner interface, more focused explanations, and easier access to follow-up questions. The explanation auto-loads on correct answers, so manual trigger button is not needed.
+- Code refs:
+```2544:2584:public/src/PracticePage.js
+      <div className="sentence-box" style={{ textAlign: 'left', marginTop: 8 }}>
+        <h3 style={{ margin: 0 }}>Explanation:</h3>
+        <div style={{ marginTop: 8 }}>
+          {isLoadingExplanation ? (
+            <p style={{ margin: '4px 0', color: '#6b7280' }}>Loading explanation...</p>
+          ) : explanationText ? (
+            <>
+              <div 
+                style={{ lineHeight: '1.6' }}
+                dangerouslySetInnerHTML={{ __html: mdToHtml(explanationText) }}
+              />
+              {currentPhrase && blankPhrase && (() => {
+                const fullKorean = getFullKoreanSentence();
+                const english = blankPhrase.translation || currentPhrase.english_text || '';
+                return fullKorean && english ? (
+                  <div style={{ marginTop: 12, textAlign: 'center' }}>
+                    <Link
+                      to={`/chat?input=${encodeURIComponent(english)}&translation=${encodeURIComponent(fullKorean)}`}
+                      className="regenerate-button"
+                      style={{ textDecoration: 'none', display: 'inline-block' }}
+                      title="Open in chat to ask follow-up questions about this explanation"
+                    >
+                      Ask Questions
+                    </Link>
+                  </div>
+                ) : null;
+              })()}
+            </>
+          ) : (
+            <p style={{ margin: '4px 0', color: '#6b7280' }}>No explanation yet.</p>
+          )}
+        </div>
+      </div>
+```
+
+```1705:1735:public/src/PracticePage.js
+      // If not in database, generate explanation via AI
+      const prompt = `Explain this Korean sentence concisely (keep under 15 lines total).
+Korean: ${fullKorean}
+English: ${english}
+
+Format your response as follows:
+
+#### Grammar Rules Involving Endings Based on Consonant/Vowel (받침 Rules)
+- State whether the verb/adjective stem ends with a consonant (받침) or vowel (no 받침)
+- Explain how endings change based on 받침 presence (e.g., "The verb '일어나다' has a stem ending in a vowel ('일어'), and it takes '났어' for the past tense in an informal polite form.")
+- If applicable, mention consonant assimilation rules (e.g., ㄷ irregular verbs, ㅂ irregular verbs, ㄹ irregular verbs)
+- If applicable, mention vowel harmony rules
+- If applicable, mention 받침-related sound changes or contractions
+- If none apply, state "No specific [rule type] applies here."
+
+#### Breakdown of the Sentence
+
+##### Particles and Their Functions
+List each particle with its function (e.g., "은 (은/는): Topic marker. '오늘은' indicates that '오늘' is the topic of the sentence.")
+
+##### Tense and Politeness Levels
+State the tense and politeness level with brief explanation.
+
+##### Vocabulary with Brief Glosses
+List key vocabulary words with brief English translations.
+
+##### Verb/Adjective Root Forms and Conjugations
+Format as a table to save space:
+| Form | Value |
+|------|-------|
+| Root | [root form] |
+| Conjugation | [conjugated form] |
+
+Keep the entire explanation under 15 lines. Be concise and focus only on the essential grammar points.
+IMPORTANT: Do NOT include romanizations (like "naeil" or "mollayo") in your explanation. Only use Korean characters and English translations.`;
+```
+- The "Ask Questions" button now appears at the bottom of the explanation content, centered. The explanation prompt now enforces a concise format with specific sections and table formatting for verb conjugations to save space.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Added auto-focus functionality to input field when switching to the PracticePage tab.
+- Rationale: UX improvement - automatically focuses the current input field when the user switches back to the tab, making it easier to continue typing without clicking.
+- Code refs:
+```65:66:public/src/PracticePage.js
+  const fetchingEnglishIndicesRef = React.useRef(false); // Prevent duplicate fetches
+  const inputRefs = React.useRef({}); // Refs for input fields to enable auto-focus on tab switch
+```
+
+```126:145:public/src/PracticePage.js
+  }, []);
+
+  // Auto-focus input when tab becomes visible
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden && currentPhrase && blankPhrase && inputRefs.current[currentBlankIndex]) {
+        // Small delay to ensure the input is rendered
+        setTimeout(() => {
+          const input = inputRefs.current[currentBlankIndex];
+          if (input) {
+            input.focus();
+          }
+        }, 100);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [currentBlankIndex, currentPhrase, blankPhrase]);
+```
+
+```2460:2462:public/src/PracticePage.js
+                <input
+                  ref={(el) => { inputRefs.current[idx] = el; }}
+                  type="text"
+```
+- Added a ref object to store references to all input fields, a visibilitychange event listener that focuses the current input when the tab becomes visible, and ref callbacks on each input field to register them in the refs object.
+
+### Edit: 2025-01-27
+- Files: `public/src/Navbar.js`
+- Summary: Added Grammar page link to navigation menu by adding it to the nav items and default navOrder array.
+- Rationale: User requested to bring back the grammar rules page - it was already implemented but missing from the navigation menu.
+- Code refs:
+```40:40:public/src/Navbar.js
+    return ['practice','mix','scores','translate','audio','journal','curriculum','grammar','kpop','stats','pronunciation','chat','journal-entries','home'];
+```
+
+```209:209:public/src/Navbar.js
+    grammar: { to: '/grammar', label: 'Grammar', className: 'nav-item nav-item-desktop' },
+```
+- The Grammar page was already implemented (GrammarPage.js exists, route is in App.js, API methods exist), but it was missing from the Navbar navigation items. Added 'grammar' to both the items object and the default navOrder array so it appears in the navigation menu.
+
+### Edit: 2025-01-27
+- Files: `public/nav-order.json`
+- Summary: Added "grammar" to the navigation order JSON file so the Grammar page appears in the navigation menu.
+- Rationale: The nav-order.json file overrides the default navigation order, so grammar needed to be added there as well as in the Navbar.js default array.
+- Code refs:
+```2:16:public/nav-order.json
+  "order": [
+    "practice",
+    "mix",
+    "scores",
+    "translate",
+    "audio",
+    "journal",
+    "curriculum",
+    "grammar",
+    "kpop",
+    "stats",
+    "pronunciation",
+    "chat",
+    "journal-entries",
+    "home"
+  ]
+```
+- Added "grammar" to the order array after "curriculum" to match the default order in Navbar.js.
+
+### Edit: 2025-01-27
+- Files: `public/src/GrammarPage.js`
+- Summary: Improved error handling and JSON parsing in handleGenerateFromPrompt function to provide better error messages and handle nested JSON properly.
+- Rationale: Bug fix - the previous error handling was too generic and didn't provide useful feedback. Also improved JSON extraction to properly handle nested JSON objects by counting braces instead of using a simple regex.
+- Code refs:
+```102:150:public/src/GrammarPage.js
+  const handleGenerateFromPrompt = async () => {
+    const text = prompt.trim();
+    if (!text) { alert('Enter a prompt first'); return; }
+    try {
+      setSaving(true);
+      const instruction = `Extract a Korean grammar rule from the following user text. Return ONLY a compact JSON object with keys: title, description, example_korean, example_english, model_korean, model_english. If some fields are unknown, use empty strings.\n\nUser text:\n${text}`;
+      const res = await api.chat(instruction);
+      if (!res.ok) {
+        const errorText = await res.text().catch(() => 'Unknown error');
+        console.error('[Grammar] API call failed:', res.status, errorText);
+        throw new Error(`API call failed: ${res.status}${errorText ? ` - ${errorText}` : ''}`);
+      }
+      const data = await res.json();
+      const content = data.response || '';
+      console.log('[Grammar] AI response:', content);
+      
+      // Try to find JSON object - look for first { and matching }
+      let jsonStart = content.indexOf('{');
+      if (jsonStart === -1) {
+        console.error('[Grammar] No JSON found in response:', content);
+        throw new Error('No JSON object found in AI response. Please try again with a clearer prompt.');
+      }
+      
+      // Find the matching closing brace by counting braces
+      let braceCount = 0;
+      let jsonEnd = -1;
+      for (let i = jsonStart; i < content.length; i++) {
+        if (content[i] === '{') {
+          braceCount++;
+        } else if (content[i] === '}') {
+          braceCount--;
+          if (braceCount === 0) {
+            jsonEnd = i + 1;
+            break;
+          }
+        }
+      }
+      
+      if (jsonEnd === -1) {
+        console.error('[Grammar] Incomplete JSON in response:', content);
+        throw new Error('Incomplete JSON object in AI response. Please try again.');
+      }
+      
+      const jsonString = content.substring(jsonStart, jsonEnd);
+      let obj;
+      try {
+        obj = JSON.parse(jsonString);
+      } catch (parseErr) {
+        console.error('[Grammar] JSON parse error:', parseErr, 'Attempted to parse:', jsonString);
+        throw new Error(`Failed to parse JSON: ${parseErr.message}`);
+      }
+      const toSave = {
+        title: String(obj.title || '').trim(),
+        description: String(obj.description || '').trim(),
+        example_korean: String(obj.example_korean || '').trim(),
+        example_english: String(obj.example_english || '').trim(),
+        model_korean: String(obj.model_korean || '').trim(),
+        model_english: String(obj.model_english || '').trim()
+      };
+      if (!toSave.title) {
+        console.error('[Grammar] Missing title in parsed object:', obj);
+        throw new Error('AI response is missing a title. Please try again with a clearer prompt.');
+      }
+      console.log('[Grammar] Saving rule:', toSave);
+      const addRes = await api.addGrammarRule(toSave);
+      if (!addRes.ok) {
+        const errorText = await addRes.text().catch(() => 'Unknown error');
+        console.error('[Grammar] Save failed:', addRes.status, errorText);
+        throw new Error(`Failed to save rule: ${addRes.status}${errorText ? ` - ${errorText}` : ''}`);
+      }
+      const r = await api.getGrammarRules(300);
+      const list = await r.json();
+      setRules(Array.isArray(list) ? list : []);
+      setPrompt('');
+      alert('Grammar rule generated and saved successfully!');
+    } catch (e) {
+      console.error('[Grammar] Error generating from prompt:', e);
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      alert(`Failed to generate from prompt: ${errorMessage}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+```
+- The function now checks if the API response is OK before parsing, uses proper brace counting to extract nested JSON objects, provides detailed error messages in alerts and console logs, and shows a success message when the rule is saved.
+
+### Edit: 2025-01-27
+- Files: `public/src/GrammarPage.js`
+- Summary: Enhanced the grammar rule generation prompt to request more detailed explanations, comparisons, and examples instead of just repeating the user's input.
+- Rationale: UX improvement - the previous prompt generated rules that just repeated the user's question. The new prompt explicitly asks for detailed explanations, comparisons with similar patterns, usage guidelines, and concrete examples.
+- Code refs:
+```107:120:public/src/GrammarPage.js
+      const instruction = `Extract a Korean grammar rule from the following user text. Return ONLY a compact JSON object with keys: title, description, example_korean, example_english, model_korean, model_english.
+
+IMPORTANT: 
+- The description should provide a CLEAR, DETAILED explanation of the grammar rule, NOT just repeat the user's prompt.
+- Include specific explanations about when to use this grammar point, how it differs from similar patterns, and any important nuances.
+- Provide concrete examples that illustrate the rule clearly.
+- If the user asks about differences between similar patterns (like 어디에서 vs 어디에), explain BOTH patterns clearly with examples showing when to use each one.
+
+Example format for description:
+- Explain the grammar concept clearly
+- Compare with similar patterns if relevant
+- Provide usage guidelines
+- Include important notes about when to use it
+
+User text:\n${text}`;
+```
+- The prompt now explicitly instructs the AI to provide detailed explanations rather than repeating the input, and includes specific guidance for handling comparison questions (like 어디에서 vs 어디에).
+
+### Edit: 2025-01-27
+- Files: `public/src/GrammarPage.js`
+- Summary: Updated grammar rule generation prompt to instruct AI to use markdown tables when comparing different cases or patterns.
+- Rationale: UX improvement - tables make comparisons between different grammar patterns (like 어디에서 vs 어디에) much clearer and easier to read than plain text.
+- Code refs:
+```107:125:public/src/GrammarPage.js
+      const instruction = `Extract a Korean grammar rule from the following user text. Return ONLY a compact JSON object with keys: title, description, example_korean, example_english, model_korean, model_english.
+
+IMPORTANT: 
+- The description should provide a CLEAR, DETAILED explanation of the grammar rule, NOT just repeat the user's prompt.
+- Include specific explanations about when to use this grammar point, how it differs from similar patterns, and any important nuances.
+- Provide concrete examples that illustrate the rule clearly.
+- If the user asks about differences between similar patterns (like 어디에서 vs 어디에), explain BOTH patterns clearly with examples showing when to use each one.
+- USE TABLES to compare different cases, patterns, or usage scenarios. Format tables using markdown table syntax:
+  | Case/Pattern | Usage | Example Korean | Example English |
+  |--------------|-------|----------------|-----------------|
+  | Pattern 1    | When to use | Example KO | Example EN |
+  | Pattern 2    | When to use | Example KO | Example EN |
+
+Example format for description:
+- Explain the grammar concept clearly
+- Use tables to compare different cases or patterns when relevant
+- Provide usage guidelines
+- Include important notes about when to use it
+
+User text:\n${text}`;
+```
+- The prompt now explicitly instructs the AI to use markdown tables when comparing different cases or patterns, with a provided table format template.
+
+### Edit: 2025-01-27
+- Files: `public/src/GrammarPage.js`
+- Summary: Updated grammar rule generation prompt to require that example Korean sentences in comparison tables include the actual pattern being described (e.g., "어디에서 왔어요?" instead of "집에서 왔어요.").
+- Rationale: UX improvement - examples should demonstrate the pattern itself, not just show a sentence that uses the particle. This makes it clearer which pattern is being illustrated.
+- Code refs:
+```173:186:public/src/GrammarPage.js
+      const instruction = `Extract a Korean grammar rule from the following user text. Return ONLY a compact JSON object with keys: title, description, example_korean, example_english, model_korean, model_english.
+
+IMPORTANT: 
+- Keep the description CONCISE but informative. Do NOT just repeat the user's prompt.
+- If comparing multiple patterns (like 어디에서 vs 어디에), USE A TABLE to show the differences clearly.
+- Format tables using markdown table syntax with headers:
+  | Pattern | Usage | Example Korean | Example English |
+  |---------|-------|----------------|-----------------|
+  | Pattern 1 | Brief usage note | Example KO | Example EN |
+  | Pattern 2 | Brief usage note | Example KO | Example EN |
+- CRITICAL: In the "Example Korean" column, the example sentence MUST include the actual pattern being described. For example, if the pattern is "어디에서", the example should be "어디에서 왔어요?" (Where did you come from?), NOT just "집에서 왔어요." (I came from home.). The pattern itself must appear in the example sentence.
+- Keep explanations brief and focused. Use the table for comparisons, then add 1-2 short bullet points for key usage notes if needed.
+- The description should be primarily the comparison table (if applicable) plus brief usage guidelines.
+
+User text:\n${text}`;
+```
+- The prompt now includes a CRITICAL instruction that example Korean sentences must include the actual pattern being described, ensuring that comparison tables show the pattern in context rather than just showing sentences that use the particle.
+
+### Edit: 2025-01-27
+- Files: `public/src/styles/GrammarPage.css`
+- Summary: Changed grammar rules grid layout from auto-fill responsive columns to a fixed 2-column grid.
+- Rationale: UX improvement - user requested a 2x2 grid layout to give more space to each grammar rule card, making them easier to read.
+- Code refs:
+```21:25:public/src/styles/GrammarPage.css
+.rules-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+```
+- Changed from `repeat(auto-fill, minmax(260px, 1fr))` to `repeat(2, 1fr)` to force exactly 2 columns regardless of screen width.
+
+### Edit: 2025-01-27
+- Files: `public/src/GrammarPage.js`
+- Summary: Removed manual grammar rule form, keeping only the "generate from prompt" functionality.
+- Rationale: UX simplification - user requested to remove the manual form and only use AI-powered generation from text prompts, streamlining the interface.
+- Code refs:
+```104:110:public/src/GrammarPage.js
+  const [rules, setRules] = useState([]);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [prompt, setPrompt] = useState('');
+```
+- Removed `form` state and `handleAddRule` function. Removed the manual input form section (title, description, example fields) and simplified the UI to only show the prompt-based generation interface.
+```287:295:public/src/GrammarPage.js
+      <div className="stats-card" style={{ marginBottom: 12 }}>
+        <h2 style={{ marginTop: 0 }}>Generate Grammar Rule from Prompt</h2>
+        <textarea rows={4} value={prompt} onChange={(e)=>setPrompt(e.target.value)} placeholder={'Describe a rule and examples...\nE.g. 은/는 topic particle with examples and a model sentence'} style={{ width: '100%', border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 10px', marginTop: 6 }} />
+        <div style={{ marginTop: 8 }}>
+          <button className="regenerate-button" onClick={handleGenerateFromPrompt} disabled={saving || !prompt.trim()}>Generate from Prompt</button>
+        </div>
+      </div>
+```
+
+### Edit: 2025-01-27
+- Files: `public/src/GrammarPage.js`
+- Summary: Updated grammar rule generation prompt to only output comparison table and usage guidelines, removing explanation section.
+- Rationale: UX improvement - user requested a more concise output format that focuses only on the comparison table and usage guidelines, eliminating redundant explanation text.
+- Code refs:
+```147:161:public/src/GrammarPage.js
+      const instruction = `Extract a Korean grammar rule from the following user text. Return ONLY a compact JSON object with keys: title, description, example_korean, example_english, model_korean, model_english.
+
+IMPORTANT: 
+- The description should contain ONLY:
+  1. A comparison table (if comparing multiple patterns)
+  2. Usage guidelines (brief bullet points)
+- Do NOT include an "Explanation" section or any other text.
+- If comparing multiple patterns (like 어디에서 vs 어디에), USE A TABLE to show the differences clearly.
+- Format tables using markdown table syntax with headers:
+  | Pattern | Usage | Example Korean | Example English |
+  |---------|-------|----------------|-----------------|
+  | Pattern 1 | Brief usage note | Example KO | Example EN |
+  | Pattern 2 | Brief usage note | Example KO | Example EN |
+- CRITICAL: In the "Example Korean" column, the example sentence MUST include the actual pattern being described. For example, if the pattern is "어디에서", the example should be "어디에서 왔어요?" (Where did you come from?), NOT just "집에서 왔어요." (I came from home.). The pattern itself must appear in the example sentence.
+- After the table, add a "Usage Guidelines" section with 2-3 brief bullet points about when to use each pattern.
+
+User text:\n${text}`;
+```
+- The prompt now explicitly instructs the AI to exclude explanation sections and only provide the comparison table and usage guidelines.
+
+### Edit: 2025-01-27
+- Files: `public/src/GrammarPage.js`
+- Summary: Added JSON cleaning logic to escape control characters (newlines, tabs, etc.) in string values before parsing AI-generated JSON responses.
+- Rationale: Bug fix - AI responses sometimes contain unescaped control characters (like newlines in markdown tables) inside JSON string values, causing "Bad control character in string literal" parsing errors. The new code walks through the JSON string and properly escapes control characters that appear inside quoted string values.
+- Code refs:
+```201:250:public/src/GrammarPage.js
+      let jsonString = content.substring(jsonStart, jsonEnd);
+      
+      // Clean up JSON: escape control characters inside string values
+      // Walk through the string and escape control chars that appear between quotes
+      let cleaned = '';
+      let inString = false;
+      let escapeNext = false;
+      for (let i = 0; i < jsonString.length; i++) {
+        const char = jsonString[i];
+        const prevChar = i > 0 ? jsonString[i - 1] : '';
+        
+        if (escapeNext) {
+          cleaned += char;
+          escapeNext = false;
+          continue;
+        }
+        
+        if (char === '\\') {
+          cleaned += char;
+          escapeNext = true;
+          continue;
+        }
+        
+        if (char === '"' && prevChar !== '\\') {
+          inString = !inString;
+          cleaned += char;
+          continue;
+        }
+        
+        if (inString) {
+          // Inside a string, escape control characters
+          if (char === '\n') {
+            cleaned += '\\n';
+          } else if (char === '\r') {
+            cleaned += '\\r';
+          } else if (char === '\t') {
+            cleaned += '\\t';
+          } else if (char === '\f') {
+            cleaned += '\\f';
+          } else if (char === '\b') {
+            cleaned += '\\b';
+          } else if (char.charCodeAt(0) < 32) {
+            // Other control characters
+            cleaned += '\\u' + ('0000' + char.charCodeAt(0).toString(16)).slice(-4);
+          } else {
+            cleaned += char;
+          }
+        } else {
+          cleaned += char;
+        }
+      }
+      
+      let obj;
+      try {
+        obj = JSON.parse(cleaned);
+      } catch (parseErr) {
+        console.error('[Grammar] JSON parse error:', parseErr, 'Attempted to parse:', cleaned.substring(0, 200));
+        throw new Error(`Failed to parse JSON: ${parseErr.message}. The AI response may contain invalid characters.`);
+      }
+```
+- The function properly tracks whether it's inside a string value (between unescaped quotes) and escapes control characters only when inside strings, preserving the JSON structure.
+
+### Edit: 2025-01-27
+- Files: `public/src/GrammarPage.js`
+- Summary: Fixed markdown table parsing to process tables before HTML escaping and improved regex to handle tables with or without separator rows.
+- Rationale: Bug fix - tables were not rendering correctly because HTML escaping was happening before table parsing, which could interfere with the regex matching. The fix processes tables first, then escapes HTML only for cell content, not the table structure.
+- Code refs:
+```15:50:public/src/GrammarPage.js
+const mdToHtml = (md) => {
+  if (!md) return '';
+  let txt = md;
+  
+  // Process markdown tables first (before escaping HTML)
+  // Match markdown table pattern: | col | col | followed by |---|---| separator, then data rows
+  // More flexible regex to handle various table formats
+  const tableRegex = /(\|[^\n]*\|(?:\n\|[-\s|:]+\|)?(?:\n\|[^\n]*\|)+)/g;
+  txt = txt.replace(tableRegex, (tableMatch) => {
+    const lines = tableMatch.trim().split('\n').filter(l => l.trim() && l.includes('|'));
+    if (lines.length < 2) return tableMatch;
+    
+    // Check if second line is a separator (contains only dashes, colons, spaces, and pipes)
+    let headerLineIndex = 0;
+    let dataStartIndex = 1;
+    if (lines.length > 1 && /^[\s|:\-]+$/.test(lines[1])) {
+      // Second line is separator, first is header
+      headerLineIndex = 0;
+      dataStartIndex = 2;
+    } else {
+      // No separator, first line is header
+      headerLineIndex = 0;
+      dataStartIndex = 1;
+    }
+    
+    if (dataStartIndex >= lines.length) return tableMatch;
+    
+    // Parse header
+    const headerCells = lines[headerLineIndex].split('|').map(c => c.trim()).filter(c => c);
+    if (headerCells.length === 0) return tableMatch;
+    
+    // Parse data rows
+    const dataRows = lines.slice(dataStartIndex).map(row => {
+      const cells = row.split('|').map(c => c.trim()).filter(c => c);
+      if (cells.length === 0) return '';
+      // Ensure we have the same number of cells as headers (pad if needed)
+      while (cells.length < headerCells.length) cells.push('');
+      return '<tr>' + cells.map(c => `<td style="padding: 6px 8px; border: 1px solid #ddd;">${escapeHtml(c)}</td>`).join('') + '</tr>';
+    }).filter(r => r);
+    
+    const headerRow = '<tr>' + headerCells.map(c => `<th style="padding: 6px 8px; border: 1px solid #ddd; background: #f3f4f6; font-weight: 600; text-align: left;">${escapeHtml(c)}</th>`).join('') + '</tr>';
+    
+    return '<table style="border-collapse: collapse; width: 100%; margin: 12px 0; border: 1px solid #ddd;"><thead>' + headerRow + '</thead><tbody>' + dataRows.join('') + '</tbody></table>';
+  });
+  
+  // Now escape HTML for the rest of the content (but not tables which are already HTML)
+  // Split by tables to preserve them
+  const parts = txt.split(/(<table[\s\S]*?<\/table>)/g);
+  const processedParts = parts.map(part => {
+    if (part.startsWith('<table')) {
+      return part; // Already processed
+    }
+    return escapeHtml(part);
+  });
+  txt = processedParts.join('');
+```
+- The function now processes tables before HTML escaping, uses a more flexible regex that handles tables with or without separator rows, and properly escapes HTML only in cell content.
+
+### Edit: 2025-01-27
+- Files: `public/src/GrammarPage.js`
+- Summary: Fixed duplicate variable declaration error by renaming `parts` variables to `tableParts` and `finalParts`.
+- Rationale: Bug fix - compilation error due to `parts` being declared twice in the same scope (once for table processing, once for paragraph processing).
+- Code refs:
+```62:83:public/src/GrammarPage.js
+  const tableParts = txt.split(/(<table[\s\S]*?<\/table>)/g);
+  const processedParts = tableParts.map(part => {
+    if (part.startsWith('<table')) {
+      return part; // Already processed
+    }
+    return escapeHtml(part);
+  });
+  txt = processedParts.join('');
+  
+  // ... other formatting ...
+  
+  // Paragraphs (split by tables and other block elements)
+  const finalParts = txt.split(/(<table[\s\S]*?<\/table>|<h[1-3]>[\s\S]*?<\/h[1-3]>)/g);
+```
+- Renamed the first `parts` to `tableParts` and the second `parts` to `finalParts` to avoid the duplicate declaration error.
+
+### Edit: 2025-01-27
+- Files: `public/src/GrammarPage.js`
+- Summary: Rewrote markdown table parsing to use line-by-line detection instead of regex, processing consecutive table rows and replacing them with HTML tables.
+- Rationale: Bug fix - regex-based table parsing was not reliably matching tables. The new approach scans lines sequentially, identifies consecutive table rows, processes them, and replaces them in place, which is more reliable for various table formats.
+- Code refs:
+```19:88:public/src/GrammarPage.js
+  // Process markdown tables first (before escaping HTML)
+  // Match markdown table pattern: lines starting with | and containing |
+  // Look for consecutive lines that look like table rows
+  const lines = txt.split('\n');
+  const tableBlocks = [];
+  let currentTable = null;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    // Check if this line looks like a table row (starts and ends with |)
+    if (line.startsWith('|') && line.endsWith('|') && line.length > 2) {
+      if (!currentTable) {
+        currentTable = { start: i, lines: [] };
+      }
+      currentTable.lines.push(line);
+    } else {
+      // Not a table row - close current table if exists
+      if (currentTable && currentTable.lines.length >= 2) {
+        tableBlocks.push(currentTable);
+      }
+      currentTable = null;
+    }
+  }
+  // Don't forget the last table if file ends with table
+  if (currentTable && currentTable.lines.length >= 2) {
+    tableBlocks.push(currentTable);
+  }
+  
+  // Process tables from end to start to preserve indices when replacing
+  for (let i = tableBlocks.length - 1; i >= 0; i--) {
+    const block = tableBlocks[i];
+    const tableLines = block.lines;
+    
+    // Check if second line is a separator
+    let headerLineIndex = 0;
+    let dataStartIndex = 1;
+    if (tableLines.length > 1 && /^[\s|:\-]+$/.test(tableLines[1])) {
+      // Second line is separator
+      headerLineIndex = 0;
+      dataStartIndex = 2;
+    }
+    
+    if (dataStartIndex >= tableLines.length) continue;
+    
+    // Parse header
+    const headerCells = tableLines[headerLineIndex].split('|').map(c => c.trim()).filter(c => c);
+    if (headerCells.length === 0) continue;
+    
+    // Parse data rows
+    const dataRows = tableLines.slice(dataStartIndex).map(row => {
+      const cells = row.split('|').map(c => c.trim()).filter(c => c);
+      if (cells.length === 0) return '';
+      // Ensure we have the same number of cells as headers
+      while (cells.length < headerCells.length) cells.push('');
+      if (cells.length > headerCells.length) {
+        const trimmed = cells.slice(0, headerCells.length);
+        cells.length = 0;
+        cells.push(...trimmed);
+      }
+      return '<tr>' + cells.map(c => `<td style="padding: 6px 8px; border: 1px solid #ddd;">${escapeHtml(c)}</td>`).join('') + '</tr>';
+    }).filter(r => r);
+    
+    const headerRow = '<tr>' + headerCells.map(c => `<th style="padding: 6px 8px; border: 1px solid #ddd; background: #f3f4f6; font-weight: 600; text-align: left;">${escapeHtml(c)}</th>`).join('') + '</tr>';
+    
+    const tableHtml = '<table style="border-collapse: collapse; width: 100%; margin: 12px 0; border: 1px solid #ddd;"><thead>' + headerRow + '</thead><tbody>' + dataRows.join('') + '</tbody></table>';
+    
+    // Replace the table lines in the lines array
+    lines.splice(block.start, tableLines.length, tableHtml);
+  }
+  
+  // Rebuild txt from modified lines array
+  txt = lines.join('\n');
+```
+- The new approach scans the text line-by-line, identifies consecutive table rows (lines starting and ending with `|`), groups them into table blocks, processes each block to extract headers and data rows, and replaces the original lines with HTML table markup.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Changed default practice mode from 1 (curriculum) to 4 (mix).
+- Rationale: UX improvement - user requested that mix mode be the default practice mode instead of curriculum mode.
+- Code refs:
+```84:91:public/src/PracticePage.js
+  const [practiceMode, setPracticeMode] = useState(() => {
+    try {
+      const saved = localStorage.getItem('practice_mode');
+      return saved ? parseInt(saved, 10) : 4;
+    } catch (_) {
+      return 4;
+    }
+  }); // 1: curriculum, 2: verb practice, 3: conversation sets, 4: mix
+```
+- Changed the default return value from `1` to `4` in both the try and catch blocks.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`, `public/src/Navbar.js`
+- Summary: Changed default for highlight English words toggle from true to false, and updated fallback in mode selector onChange handler to match default mode (4/Mix).
+- Rationale: Bug fix - user reported that highlight toggle should be off by default and was getting stuck. Also updated mode selector fallback to be consistent with default mode.
+- Code refs:
+```92:99:public/src/PracticePage.js
+  const [highlightEnglishWords, setHighlightEnglishWords] = useState(() => {
+    try {
+      const saved = localStorage.getItem('practice_highlight_english');
+      return saved !== null ? saved === 'true' : false; // Default to false
+    } catch (_) {
+      return false;
+    }
+  }); // Whether to highlight English words corresponding to blanks
+```
+```114:127:public/src/PracticePage.js
+  // Listen for changes to highlight setting from Navbar
+  useEffect(() => {
+    const handleHighlightChange = () => {
+      try {
+        const saved = localStorage.getItem('practice_highlight_english');
+        setHighlightEnglishWords(saved !== null ? saved === 'true' : false);
+      } catch (_) {
+        setHighlightEnglishWords(false);
+      }
+    };
+    window.addEventListener('practice_highlight_english_changed', handleHighlightChange);
+    return () => {
+      window.removeEventListener('practice_highlight_english_changed', handleHighlightChange);
+    };
+  }, []);
+```
+```2786:2790:public/src/PracticePage.js
+              <select value={practiceMode} onChange={(e) => {
+                const val = parseInt(e.target.value || '4', 10);
+                setPracticeMode(val);
+                try { localStorage.setItem('practice_mode', String(val)); } catch (_) {}
+              }} style={{ padding: 4, border: '1px solid #ddd', borderRadius: 4 }}>
+```
+- Changed all default values for highlightEnglishWords from `true` to `false` in both PracticePage and Navbar. Updated mode selector fallback from '1' to '4' to match the default mode.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Improved explanation panel rendering with better markdown support (including tables) and enhanced styling for readability.
+- Rationale: UX improvement - user requested better rendering of explanation panel. Added table parsing (similar to GrammarPage), improved heading styles, better spacing, and enhanced visual design with background color and borders.
+- Code refs:
+```24:150:public/src/PracticePage.js
+const mdToHtml = (md) => {
+  if (!md) return '';
+  let txt = md;
+  
+  // Process markdown tables first (before escaping HTML)
+  const lines = txt.split('\n');
+  const tableBlocks = [];
+  let currentTable = null;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    // Check if this line looks like a table row (starts and ends with |)
+    if (line.startsWith('|') && line.endsWith('|') && line.length > 2) {
+      if (!currentTable) {
+        currentTable = { start: i, lines: [] };
+      }
+      currentTable.lines.push(line);
+    } else {
+      // Not a table row - close current table if exists
+      if (currentTable && currentTable.lines.length >= 2) {
+        tableBlocks.push(currentTable);
+      }
+      currentTable = null;
+    }
+  }
+  // Don't forget the last table if file ends with table
+  if (currentTable && currentTable.lines.length >= 2) {
+    tableBlocks.push(currentTable);
+  }
+  
+  // Process tables from end to start to preserve indices when replacing
+  for (let i = tableBlocks.length - 1; i >= 0; i--) {
+    const block = tableBlocks[i];
+    const tableLines = block.lines;
+    
+    // Check if second line is a separator
+    let headerLineIndex = 0;
+    let dataStartIndex = 1;
+    if (tableLines.length > 1 && /^[\s|:\-]+$/.test(tableLines[1])) {
+      // Second line is separator
+      headerLineIndex = 0;
+      dataStartIndex = 2;
+    }
+    
+    if (dataStartIndex >= tableLines.length) continue;
+    
+    // Parse header
+    const headerCells = tableLines[headerLineIndex].split('|').map(c => c.trim()).filter(c => c);
+    if (headerCells.length === 0) continue;
+    
+    // Parse data rows
+    const dataRows = tableLines.slice(dataStartIndex).map(row => {
+      const cells = row.split('|').map(c => c.trim()).filter(c => c);
+      if (cells.length === 0) return '';
+      // Ensure we have the same number of cells as headers
+      while (cells.length < headerCells.length) cells.push('');
+      if (cells.length > headerCells.length) {
+        const trimmed = cells.slice(0, headerCells.length);
+        cells.length = 0;
+        cells.push(...trimmed);
+      }
+      return '<tr>' + cells.map(c => `<td style="padding: 6px 8px; border: 1px solid #ddd;">${escapeHtml(c)}</td>`).join('') + '</tr>';
+    }).filter(r => r);
+    
+    const headerRow = '<tr>' + headerCells.map(c => `<th style="padding: 6px 8px; border: 1px solid #ddd; background: #f3f4f6; font-weight: 600; text-align: left;">${escapeHtml(c)}</th>`).join('') + '</tr>';
+    
+    const tableHtml = '<table style="border-collapse: collapse; width: 100%; margin: 12px 0; border: 1px solid #ddd;"><thead>' + headerRow + '</thead><tbody>' + dataRows.join('') + '</tbody></table>';
+    
+    // Replace the table lines in the lines array
+    lines.splice(block.start, tableLines.length, tableHtml);
+  }
+  
+  // Rebuild txt from modified lines array
+  txt = lines.join('\n');
+  
+  // Now escape HTML for the rest of the content (but not tables which are already HTML)
+  const tableParts = txt.split(/(<table[\s\S]*?<\/table>)/g);
+  const processedParts = tableParts.map(part => {
+    if (part.startsWith('<table')) {
+      return part; // Already processed
+    }
+    return escapeHtml(part);
+  });
+  txt = processedParts.join('');
+  
+  // Code blocks
+  txt = txt.replace(/```([\s\S]*?)```/g, (m, p1) => `<pre style="background: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto;"><code>${p1}</code></pre>`);
+  // Bold **text**
+  txt = txt.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  // Italics *text*
+  txt = txt.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
+  // Headings
+  txt = txt.replace(/^####\s+(.+)$/gm, '<h4 style="margin: 12px 0 6px 0; font-size: 1.1em; font-weight: 600; color: #374151;">$1</h4>')
+           .replace(/^###\s+(.+)$/gm, '<h3 style="margin: 16px 0 8px 0; font-size: 1.2em; font-weight: 600; color: #1f2937;">$1</h3>')
+           .replace(/^##\s+(.+)$/gm, '<h2 style="margin: 20px 0 10px 0; font-size: 1.3em; font-weight: 600; color: #111827;">$1</h2>')
+           .replace(/^#\s+(.+)$/gm, '<h1 style="margin: 24px 0 12px 0; font-size: 1.5em; font-weight: 700; color: #000;">$1</h1>');
+  // Lists
+  txt = txt.replace(/^(?:[-*])\s+(.+)$/gm, '<li style="margin: 4px 0;">$1</li>');
+  txt = txt.replace(/(<li[\s\S]*?<\/li>)/g, (m) => `<ul style="margin: 8px 0; padding-left: 24px;">${m}</ul>`);
+  
+  // Paragraphs (split by tables, code blocks, and headings)
+  const finalParts = txt.split(/(<table[\s\S]*?<\/table>|<pre[\s\S]*?<\/pre>|<h[1-4]>[\s\S]*?<\/h[1-4]>)/g);
+  const htmlParts = [];
+  for (let i = 0; i < finalParts.length; i++) {
+    const part = finalParts[i];
+    // If it's already a table, code block, or heading, keep it as is
+    if (part.match(/^<(table|pre|h[1-4])/)) {
+      htmlParts.push(part);
+    } else {
+      // Otherwise, convert to paragraphs
+      const p = part
+        .split(/\n{2,}/)
+        .map(seg => seg.trim() ? `<p style="margin: 8px 0; line-height: 1.6;">${seg.replace(/\n/g, '<br>')}</p>` : '')
+        .join('');
+      htmlParts.push(p);
+    }
+  }
+  return htmlParts.join('');
+};
+```
+```2578:2610:public/src/PracticePage.js
+      <div className="sentence-box" style={{ textAlign: 'left', marginTop: 16, padding: '16px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8 }}>
+        <h3 style={{ margin: '0 0 12px 0', fontSize: '1.2em', fontWeight: 600, color: '#1f2937' }}>Explanation</h3>
+        <div style={{ marginTop: 8 }}>
+          {isLoadingExplanation ? (
+            <p style={{ margin: '8px 0', color: '#6b7280', fontStyle: 'italic' }}>Loading explanation...</p>
+          ) : explanationText ? (
+            <>
+              <div 
+                style={{ 
+                  lineHeight: '1.7',
+                  color: '#374151',
+                  fontSize: '0.95em'
+                }}
+                dangerouslySetInnerHTML={{ __html: mdToHtml(explanationText) }}
+              />
+              {currentPhrase && blankPhrase && (() => {
+                const fullKorean = getFullKoreanSentence();
+                const english = blankPhrase.translation || currentPhrase.english_text || '';
+                return fullKorean && english ? (
+                  <div style={{ marginTop: 16, textAlign: 'center', paddingTop: 12, borderTop: '1px solid #e5e7eb' }}>
+                    <Link
+                      to={`/chat?input=${encodeURIComponent(english)}&translation=${encodeURIComponent(fullKorean)}`}
+                      className="regenerate-button"
+                      style={{ textDecoration: 'none', display: 'inline-block' }}
+                      title="Open in chat to ask follow-up questions about this explanation"
+                    >
+                      Ask Questions
+                    </Link>
+                  </div>
+                ) : null;
+              })()}
+            </>
+          ) : (
+            <p style={{ margin: '8px 0', color: '#6b7280', fontStyle: 'italic' }}>No explanation yet.</p>
+          )}
+        </div>
+      </div>
+```
+- Added table parsing logic (similar to GrammarPage) to handle markdown tables. Enhanced heading styles with proper margins and colors. Improved overall panel styling with background color, borders, and better spacing. Added inline styles for better visual hierarchy and readability.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Added "Explain" button back to the button group and made explanation panel conditional on showExplanation state.
+- Rationale: UX improvement - user requested to bring back the Explain button so users can manually trigger explanation display. The explanation panel now only shows when showExplanation is true (controlled by the button).
+- Code refs:
+```2647:2672:public/src/PracticePage.js
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'center', alignItems: 'center' }}>
+        <button 
+          type="button"
+          onClick={() => {
+            setShowAnswer(!showAnswer);
+            setShowAnswerBelow(!showAnswerBelow);
+          }}
+          className="regenerate-button"
+        >
+          {showAnswer ? 'Hide Answer' : 'Show Answer'}
+        </button>
+        <button 
+          type="button"
+          onClick={handleToggleExplanation}
+          className="regenerate-button"
+          disabled={isLoadingExplanation}
+        >
+          {isLoadingExplanation ? 'Loading...' : (showExplanation ? 'Hide Explanation' : 'Explain')}
+        </button>
+        <button 
+          onClick={handleSkip}
+          className="regenerate-button"
+        >
+          Skip
+        </button>
+        <button 
+          type="button"
+          className="regenerate-button"
+          onClick={handleSpeakFullThreeTimes}
+          title="Speak full Korean sentence three times"
+        >
+          Speak x3 (KO)
+        </button>
+      </div>
+```
+```2681:2715:public/src/PracticePage.js
+      {showExplanation && (
+        <div className="sentence-box" style={{ textAlign: 'left', marginTop: 16, padding: '16px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: '1.2em', fontWeight: 600, color: '#1f2937' }}>Explanation</h3>
+          <div style={{ marginTop: 8 }}>
+            {isLoadingExplanation ? (
+              <p style={{ margin: '8px 0', color: '#6b7280', fontStyle: 'italic' }}>Loading explanation...</p>
+            ) : explanationText ? (
+              <>
+                <div 
+                  style={{ 
+                    lineHeight: '1.7',
+                    color: '#374151',
+                    fontSize: '0.95em'
+                  }}
+                  dangerouslySetInnerHTML={{ __html: mdToHtml(explanationText) }}
+                />
+                {currentPhrase && blankPhrase && (() => {
+                  const fullKorean = getFullKoreanSentence();
+                  const english = blankPhrase.translation || currentPhrase.english_text || '';
+                  return fullKorean && english ? (
+                    <div style={{ marginTop: 16, textAlign: 'center', paddingTop: 12, borderTop: '1px solid #e5e7eb' }}>
+                      <Link
+                        to={`/chat?input=${encodeURIComponent(english)}&translation=${encodeURIComponent(fullKorean)}`}
+                        className="regenerate-button"
+                        style={{ textDecoration: 'none', display: 'inline-block' }}
+                        title="Open in chat to ask follow-up questions about this explanation"
+                      >
+                        Ask Questions
+                      </Link>
+                    </div>
+                  ) : null;
+                })()}
+              </>
+            ) : (
+              <p style={{ margin: '8px 0', color: '#6b7280', fontStyle: 'italic' }}>No explanation yet.</p>
+            )}
+          </div>
+        </div>
+      )}
+```
+- Added "Explain" button between "Show Answer" and "Skip" buttons. Button shows "Explain" when hidden, "Hide Explanation" when shown, and "Loading..." when fetching. Wrapped explanation panel in conditional render based on showExplanation state.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Changed "Explain" button text to "Explain Sentence" and moved speak button from button group to a sound icon (🔊) next to the Korean sentence.
+- Rationale: UX improvement - user requested clearer button label and more intuitive placement of the speak button as an icon next to the sentence it will speak.
+- Code refs:
+```2658:2665:public/src/PracticePage.js
+        <button 
+          type="button"
+          onClick={handleToggleExplanation}
+          className="regenerate-button"
+          disabled={isLoadingExplanation}
+        >
+          {isLoadingExplanation ? 'Loading...' : (showExplanation ? 'Hide Explanation' : 'Explain Sentence')}
+        </button>
+```
+```2569:2610:public/src/PracticePage.js
+      <p className="korean-sentence" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          {koreanParts.map((part, idx) => (
+            <React.Fragment key={idx}>
+              {part}
+              {idx < blankCount && (
+                <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', verticalAlign: 'baseline', margin: '0 2px' }}>
+                  <input
+                    ref={(el) => { inputRefs.current[idx] = el; }}
+                    type="text"
+                    className="fill-in-blank-input"
+                    value={inputValues[idx] || ''}
+                    onChange={(e) => {
+                      handleInputChange(idx, e.target.value);
+                    }}
+                    onKeyDown={(e) => {
+                      handleKeyDown(e, idx);
+                    }}
+                    placeholder={idx === currentBlankIndex ? inputPlaceholder || '' : ''}
+                    autoFocus={idx === currentBlankIndex}
+                    style={{ 
+                      width: `${Math.max((blankPhrase.blanks[idx]?.length || 3) * 1.5, 3)}em`,
+                      borderColor: inputValues[idx] && idx === currentBlankIndex ? '#3498db' : undefined
+                    }}
+                  />
+                  {showAnswerBelow && (
+                    <div style={{ 
+                      fontSize: '0.9rem', 
+                      color: '#28a745', 
+                      fontWeight: 600,
+                      marginTop: '2px',
+                      textAlign: 'center',
+                      lineHeight: 1.2
+                    }}>
+                      {blankPhrase.correct_answers[idx] || blankPhrase.blanks[idx] || ''}
+                    </div>
+                  )}
+                </span>
+              )}
+            </React.Fragment>
+          ))}
+        </span>
+        <button
+          type="button"
+          onClick={handleSpeakFullThreeTimes}
+          style={{
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: '4px 8px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#6b7280',
+            fontSize: '1.2em'
+          }}
+          title="Speak full Korean sentence three times"
+        >
+          🔊
+        </button>
+      </p>
+```
+- Changed button text from "Explain" to "Explain Sentence". Removed "Speak x3 (KO)" button from button group and added sound icon (🔊) as an inline button next to the Korean sentence. Updated sentence container to use flexbox layout to accommodate the icon.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Added H5 (#####) heading support to markdown renderer to properly render sub-sections in explanations.
+- Rationale: Bug fix - explanation prompt uses H5 headings (#####) for sub-sections like "Particles and Their Functions", but the renderer only supported up to H4. Added H5 support with appropriate styling.
+- Code refs:
+```115:119:public/src/PracticePage.js
+  // Headings (process from most specific to least specific)
+  txt = txt.replace(/^#####\s+(.+)$/gm, '<h5 style="margin: 10px 0 4px 0; font-size: 1em; font-weight: 600; color: #4b5563;">$1</h5>')
+           .replace(/^####\s+(.+)$/gm, '<h4 style="margin: 12px 0 6px 0; font-size: 1.1em; font-weight: 600; color: #374151;">$1</h4>')
+           .replace(/^###\s+(.+)$/gm, '<h3 style="margin: 16px 0 8px 0; font-size: 1.2em; font-weight: 600; color: #1f2937;">$1</h3>')
+           .replace(/^##\s+(.+)$/gm, '<h2 style="margin: 20px 0 10px 0; font-size: 1.3em; font-weight: 600; color: #111827;">$1</h2>')
+           .replace(/^#\s+(.+)$/gm, '<h1 style="margin: 24px 0 12px 0; font-size: 1.5em; font-weight: 700; color: #000;">$1</h1>');
+```
+```125:130:public/src/PracticePage.js
+  // Paragraphs (split by tables, code blocks, and headings)
+  const finalParts = txt.split(/(<table[\s\S]*?<\/table>|<pre[\s\S]*?<\/pre>|<h[1-5]>[\s\S]*?<\/h[1-5]>)/g);
+  const htmlParts = [];
+  for (let i = 0; i < finalParts.length; i++) {
+    const part = finalParts[i];
+    // If it's already a table, code block, or heading, keep it as is
+    if (part.match(/^<(table|pre|h[1-5])/)) {
+      htmlParts.push(part);
+```
+- Added H5 heading regex replacement (processes before H4 to avoid conflicts). Updated regex patterns in paragraph splitting to include h5. H5 styled with smaller font size (1em) and appropriate margins/colors for sub-sections.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Updated explanation prompt to specify that the "Root" in the verb/adjective table should be the dictionary form (ending in 다), not just the stem.
+- Rationale: Bug fix - AI was providing incomplete root forms (e.g., "일하" instead of "일하다"). The prompt now explicitly requests the full dictionary form ending in 다.
+- Code refs:
+```1846:1851:public/src/PracticePage.js
+##### Verb/Adjective Root Forms and Conjugations
+Format as a table to save space:
+| Form | Value |
+|------|-------|
+| Root | [dictionary form ending in 다, e.g., 일하다, 가다, 먹다] |
+| Conjugation | [conjugated form as it appears in the sentence] |
+```
+- Changed the Root field description from "[root form]" to "[dictionary form ending in 다, e.g., 일하다, 가다, 먹다]" to make it clear that the full dictionary form should be provided.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Added verb priority logic for blank selection in verb practice mode - blanks are now more likely to be placed in verb positions.
+- Rationale: UX improvement - user requested that verb practice mode should prioritize having blanks in verbs with higher probability, making the practice more focused on verb conjugation.
+- Code refs:
+```263:330:public/src/PracticePage.js
+  // Select blank indices with priority for verbs (for verb practice mode)
+  const selectBlankIndicesWithVerbPriority = useCallback((words, types, desired, practiceMode) => {
+    if (!Array.isArray(words) || words.length === 0) return [];
+    
+    // Get all candidates
+    const candidates = getCandidateBlankIndices(words, types);
+    if (candidates.length === 0) {
+      // Fallback to all indices
+      return words.map((_, i) => i).slice(0, desired);
+    }
+    
+    // For verb practice mode, prioritize verbs
+    if (practiceMode === 2) {
+      const verbIndices = [];
+      const nonVerbIndices = [];
+      
+      for (const idx of candidates) {
+        const t = Array.isArray(types) && types.length === words.length ? String(types[idx] || '').toLowerCase() : '';
+        const word = String(words[idx] || '').trim();
+        
+        // Check if it's a verb by POS tag or by common verb endings
+        const isVerb = t && (t.includes('verb') || t.includes('v-'));
+        const looksLikeVerb = !isVerb && word && (
+          word.endsWith('다') || 
+          word.endsWith('요') || 
+          word.endsWith('어요') || 
+          word.endsWith('아요') || 
+          word.endsWith('해요') || 
+          word.endsWith('있어요') || 
+          word.endsWith('었어요') || 
+          word.endsWith('았어요') ||
+          word.endsWith('할') ||
+          word.endsWith('할 거예요') ||
+          word.includes('하고')
+        );
+        
+        if (isVerb || looksLikeVerb) {
+          verbIndices.push(idx);
+        } else {
+          nonVerbIndices.push(idx);
+        }
+      }
+      
+      // Prioritize verbs: try to fill at least half with verbs if available
+      const verbCount = Math.min(verbIndices.length, Math.ceil(desired / 2));
+      const nonVerbCount = desired - verbCount;
+      
+      const chosen = [];
+      
+      // Add verbs first
+      const verbPool = [...verbIndices];
+      for (let i = 0; i < verbCount && verbPool.length > 0; i++) {
+        const idx = Math.floor(Math.random() * verbPool.length);
+        chosen.push(verbPool[idx]);
+        verbPool.splice(idx, 1);
+      }
+      
+      // Add non-verbs to fill remaining slots
+      const nonVerbPool = [...nonVerbIndices];
+      for (let i = 0; i < nonVerbCount && nonVerbPool.length > 0; i++) {
+        const idx = Math.floor(Math.random() * nonVerbPool.length);
+        chosen.push(nonVerbPool[idx]);
+        nonVerbPool.splice(idx, 1);
+      }
+      
+      // If we still need more and have candidates left, fill from remaining
+      const remaining = [...verbPool, ...nonVerbPool];
+      while (chosen.length < desired && remaining.length > 0) {
+        const idx = Math.floor(Math.random() * remaining.length);
+        chosen.push(remaining[idx]);
+        remaining.splice(idx, 1);
+      }
+      
+      return chosen.sort((a, b) => a - b);
+    }
+    
+    // For other modes, use random selection from candidates
+    const pool = candidates.length >= desired ? [...candidates] : words.map((_, i) => i);
+    const chosen = [];
+    while (chosen.length < desired && pool.length > 0) {
+      const idx = Math.floor(Math.random() * pool.length);
+      chosen.push(pool[idx]);
+      pool.splice(idx, 1);
+    }
+    return chosen.sort((a, b) => a - b);
+  }, [getCandidateBlankIndices]);
+```
+- The function identifies verbs by POS tags or common verb endings (다, 요, 어요, 아요, 해요, etc.), separates candidates into verb and non-verb indices, and prioritizes selecting at least half of the blanks from verb positions when available. Updated all verb practice blank selection locations to use this new function.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Updated explanation prompt to clarify that the Root should be the dictionary form of the MAIN verb/adjective being conjugated in the sentence, not just any verb/adjective present.
+- Rationale: Bug fix - AI was sometimes identifying the wrong verb as the root (e.g., showing "행복하다" when the conjugated verb is actually "듣다" in "행복을 들 거예요"). The prompt now explicitly instructs to identify the main conjugated verb/adjective.
+- Code refs:
+```1847:1852:public/src/PracticePage.js
+##### Verb/Adjective Root Forms and Conjugations
+Format as a table to save space:
+| Form | Value |
+|------|-------|
+| Root | [dictionary form ending in 다 of the MAIN verb/adjective being conjugated in the sentence, e.g., if the sentence has "일하고 있어요", the root is "일하다", not other verbs in the sentence] |
+| Conjugation | [conjugated form as it appears in the sentence - the actual conjugated verb/adjective, not other words] |
+```
+- Added clarification that the Root should be the MAIN verb/adjective being conjugated, with an example showing that if "일하고 있어요" appears, the root is "일하다" (not other verbs that might be in the sentence).
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Enhanced explanation prompt to more explicitly identify the conjugated verb/adjective - the one that carries tense/politeness markers, not verbs appearing in other forms.
+- Rationale: Bug fix - AI was incorrectly identifying roots (e.g., "행복하다" instead of "듣다" in "행복을 들 거예요"). Added explicit instruction to identify the verb that carries tense/politeness endings, with a specific example showing the correct identification.
+- Code refs:
+```1920:1925:public/src/PracticePage.js
+##### Verb/Adjective Root Forms and Conjugations
+Format as a table to save space:
+| Form | Value |
+|------|-------|
+| Root | [dictionary form ending in 다 of the verb/adjective that carries the tense and politeness markers in the sentence. Identify the word that is actually conjugated (has tense/politeness endings like -어요, -아요, -을 거예요, etc.), not other verbs/adjectives that appear as nouns or in other forms. For example, in "행복을 들 거예요", the root is "듣다" (the verb being conjugated), not "행복하다" (which appears as a noun "행복을")] |
+| Conjugation | [the actual conjugated verb/adjective form as it appears in the sentence, e.g., "들 거예요" from "듣다"] |
+```
+- Added detailed instruction with specific example showing that in "행복을 들 거예요", the root should be "듣다" (the conjugated verb) not "행복하다" (which appears as a noun). Clarified that the root should be the verb/adjective that carries tense/politeness markers.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`
+- Summary: Added auto-unmute functionality when user clicks the sound icon (🔊) to play audio - if the app is muted, it will automatically unmute before playing.
+- Rationale: UX improvement - when a user explicitly clicks a sound icon to play audio, they clearly want to hear it, so the app should automatically unmute if currently muted.
+- Code refs:
+```942:949:public/src/PracticePage.js
+  // Speak the full Korean sentence (with blanks filled) three times
+  const handleSpeakFullThreeTimes = useCallback(() => {
+    // Unmute if currently muted
+    if (window.__APP_MUTED__ === true) {
+      try {
+        localStorage.setItem('app_muted', '0');
+        window.__APP_MUTED__ = false;
+      } catch (_) {}
+    }
+    try { const synth = window.speechSynthesis; if (synth) synth.cancel(); } catch (_) {}
+    const full = getFullKoreanSentence();
+    if (!full) return;
+    speakText(full, null, 3);
+  }, [getFullKoreanSentence, speakText]);
+```
+- Added check for `window.__APP_MUTED__` at the start of `handleSpeakFullThreeTimes` - if muted, sets both localStorage and window global to unmuted state before proceeding with speech synthesis.
+
+### Edit: 2025-01-27
+- Files: `public/src/ChatPage.js`
+- Summary: Added "Always explain in English" instruction to the end of all chat prompts to ensure AI responses are always in English.
+- Rationale: UX improvement - user requested that chat responses should always be in English, regardless of the question or context.
+- Code refs:
+```20:28:public/src/ChatPage.js
+  const requestExplanation = React.useCallback(async (input, translation) => {
+    try {
+      const prompt = `Explain the Korean translation in detail.
+Original (user): ${input}
+Translation (ko): ${translation}
+Please include a clear breakdown of grammar (particles, tense, politeness), vocabulary with brief glosses, and any pronunciation notes.
+Keep it concise and structured for a learner.
+IMPORTANT: Do NOT include romanizations (like "naeil" or "mollayo") in your explanation. Only use Korean characters and English translations.
+Always explain in English.`;
+```
+```52:54:public/src/ChatPage.js
+      const prompt = lastContext
+        ? `You are helping a learner understand a prior translation.\nOriginal: ${lastContext.input}\nTranslation (ko): ${lastContext.translation}\nUser question: ${q}\nAnswer clearly and concisely. Always explain in English.`
+        : `User question: ${q}\nAnswer clearly and concisely for a Korean learner. Always explain in English.`;
+```
+- Added "Always explain in English." to the end of both the initial explanation prompt (requestExplanation) and the user question prompt (handleSend) to ensure all AI responses are in English.
+
+### Edit: 2025-01-27
+- Files: `public/src/PracticePage.js`, `public/src/AudioLearningPage.js`, `public/src/conversationGenerator.js` (new)
+- Summary: Excluded proper nouns from conversation blanks in PracticePage and extracted conversation generation logic into a separate reusable module.
+- Rationale: UX improvement - proper nouns (like names, places) should not be blanked in conversation practice as they are not learnable vocabulary. Code organization - conversation generation logic is now shared between AudioLearningPage and can be reused elsewhere.
+- Code refs:
+```810:845:public/src/PracticePage.js
+  const selectNextConversationPhrase = useCallback(() => {
+    // ... existing code ...
+    // Get word types to exclude proper nouns
+    const types = (next && wordTypesByPhraseId && wordTypesByPhraseId[next.id]) || null;
+    const candidates = getCandidateBlankIndices(words, types);
+    // ... rest of function ...
+  }, [conversationSession, usedPhraseIds, numBlanks, getCandidateBlankIndices, wordTypesByPhraseId]);
+```
+- Added useEffect to fetch word types for conversation sentences (similar to curriculum phrases) so proper nouns can be excluded from blank selection. Updated `selectNextConversationPhrase` to use word types when available.
+- Created new file `public/src/conversationGenerator.js` with `generateConversationSet` function extracted from AudioLearningPage.js. Updated AudioLearningPage.js to import and use the shared module.
+
+### Edit: 2025-01-27
+- Files: `public/src/AudioLearningPage.js`, `public/src/backgroundAudio.js`
+- Summary: Added fast forward/rewind (next/previous track) buttons to Android audio controls via MediaSession API, and added conversation titles to MediaSession metadata so each conversation shows its title in the audio controls.
+- Rationale: UX improvement - user requested fast forward/rewind buttons in Android audio controls and wanted to see conversation titles instead of generic "Conversation Audio" text.
+- Code refs:
+```142:194:public/src/backgroundAudio.js
+// Initialize MediaSession API handlers
+const initMediaSession = () => {
+  // ... existing play/pause/stop handlers ...
+  // Previous/Next track handlers for playlist navigation
+  try {
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+      console.log('MediaSession: Previous track');
+      if (globalAudioState.previousTrackCallback) {
+        globalAudioState.previousTrackCallback();
+      }
+    });
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+      console.log('MediaSession: Next track');
+      if (globalAudioState.nextTrackCallback) {
+        globalAudioState.nextTrackCallback();
+      }
+    });
+  } catch (err) {
+    console.warn('MediaSession previous/next track handlers not supported:', err);
+  }
+};
+```
+```196:228:public/src/backgroundAudio.js
+const updateMediaSession = (title, artist, playing = false, callbacks = {}) => {
+  // ... existing code ...
+  // Update callbacks if provided
+  if (callbacks.play) globalAudioState.playCallback = callbacks.play;
+  if (callbacks.pause) globalAudioState.pauseCallback = callbacks.pause;
+  if (callbacks.stop) globalAudioState.stopCallback = callbacks.stop;
+  if (callbacks.nexttrack) globalAudioState.nextTrackCallback = callbacks.nexttrack;
+  if (callbacks.previoustrack) globalAudioState.previousTrackCallback = callbacks.previoustrack;
+  // ... rest of function ...
+};
+```
+```143:225:public/src/AudioLearningPage.js
+  // Playlist state
+  const [playlist, setPlaylist] = React.useState([]); // Array of conversation objects
+  const [playlistIndex, setPlaylistIndex] = React.useState(-1); // Current index in playlist (-1 = no playlist)
+  const [isPlaylistMode, setIsPlaylistMode] = React.useState(false);
+  const [currentConversationTitle, setCurrentConversationTitle] = React.useState('');
+  
+  // Navigate to next/previous conversation in playlist
+  const playNextConversation = React.useCallback(async () => { /* ... */ });
+  const playPreviousConversation = React.useCallback(async () => { /* ... */ });
+```
+```1007:1062:public/src/AudioLearningPage.js
+  const playConversationAudio = React.useCallback((shouldLoop = false, audioUrl = null, title = null) => {
+    // ... audio setup ...
+    // Get current conversation title for MediaSession
+    const sessionTitle = title || (currentConv ? currentConv.title : null) || currentConversationTitle || 'Conversation Audio';
+    if (title || currentConv) {
+      setCurrentConversationTitle(sessionTitle);
+    }
+    // Set up MediaSession callbacks with nexttrack/previoustrack handlers
+    updateMediaSession(sessionTitle, 'Korean Learning', true, {
+      // ... play/pause/stop handlers ...
+      nexttrack: isPlaylistMode && playlist.length > 1 ? playNextConversation : undefined,
+      previoustrack: isPlaylistMode && playlist.length > 1 ? playPreviousConversation : undefined,
+    });
+  }, [conversationAudioUrl, searchParams, isPlaylistMode, playlist, playlistIndex, currentConversationTitle]);
+```
+- Added `previoustrack` and `nexttrack` action handlers to MediaSession API in backgroundAudio.js. These handlers call callbacks that navigate through the playlist of saved conversations.
+- Added playlist navigation functions (`playNextConversation`, `playPreviousConversation`) that load and play the next/previous conversation in the playlist.
+- Updated `playConversationAudio` to accept a `title` parameter and use it in MediaSession metadata, so each conversation shows its actual title in Android audio controls instead of generic "Conversation Audio".
+- Added "Create Playlist" button that creates a playlist from all saved conversations and starts playing the first one.
+- Updated all calls to `playConversationAudio` to pass the conversation title when available.
+- Added `currentConversationTitle` state to track the title of the currently playing conversation.
+
+### Edit: 2025-01-27
+- Files: `public/src/AudioLearningPage.js`
+- Summary: Enhanced "Generate New Conversation" to generate and display the audio pattern breakdown (Korean sentence, English sentence, word-by-word pairs, Korean sentence repeat) with a toggle button to show/hide details. By default, only Korean and English sentences are shown.
+- Rationale: UX improvement - user requested to see the audio pattern that will be played when generating conversations, with the ability to toggle the detailed breakdown on/off.
+- Code refs:
+```1278:1300:public/src/AudioLearningPage.js
+  // Generate a new conversation and load into UI
+  const handleGenerateNewConversation = React.useCallback(async () => {
+    try {
+      const batch = await generateConversationSetLocal(conversationContextKorean, conversationContextEnglish);
+      if (Array.isArray(batch) && batch.length > 0) {
+        // Generate English word indices and word pairs for each sentence (following audio pattern)
+        const batchWithData = await Promise.all(batch.map(async (sent) => {
+          try {
+            const [mapping, wordPairs] = await Promise.all([
+              generateEnglishWordIndices(sent.korean, sent.english),
+              getWordByWordPairs(sent.english, sent.korean)
+            ]);
+            return {
+              ...sent,
+              englishWordMapping: mapping, // Store mapping for use in PracticePage
+              wordPairs: Array.isArray(wordPairs) ? wordPairs : [] // Store word pairs for audio pattern display
+            };
+          } catch (_) {
+            // Fallback: try to get word pairs separately if combined fails
+            try {
+              const mapping = await generateEnglishWordIndices(sent.korean, sent.english);
+              const wordPairs = await getWordByWordPairs(sent.english, sent.korean);
+              return {
+                ...sent,
+                englishWordMapping: mapping,
+                wordPairs: Array.isArray(wordPairs) ? wordPairs : []
+              };
+            } catch (_) {
+              return sent; // Return original if both fail
+            }
+          }
+        }));
+        setGeneratedSentences(batchWithData);
+        setCurrentConversationId(null); // New conversation, not saved yet
+        setConversationAudioUrl('');
+      }
+    } catch (_) {}
+  }, [conversationContextKorean, conversationContextEnglish, generateConversationSetLocal, generateEnglishWordIndices, getWordByWordPairs]);
+```
+```119:119:public/src/AudioLearningPage.js
+  const [showAudioPatternDetails, setShowAudioPatternDetails] = React.useState(false); // Toggle for audio pattern breakdown
+```
+```2611:2650:public/src/AudioLearningPage.js
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span>Generated Sentences (Level >= 2)</span>
+                    {currentConversationId && (
+                      <span style={{ fontSize: 11, color: '#666', fontWeight: 400 }}>
+                        ID: {currentConversationId}
+                      </span>
+                    )}
+                    <button
+                      className="audio-mini-btn"
+                      onClick={() => setShowAudioPatternDetails(!showAudioPatternDetails)}
+                      style={{ marginLeft: 'auto', fontSize: 11 }}
+                      title={showAudioPatternDetails ? 'Hide audio pattern details' : 'Show audio pattern details'}
+                    >
+                      {showAudioPatternDetails ? 'Hide Pattern' : 'Show Pattern'}
+                    </button>
+                  </div>
+                  <div style={{ display: 'grid', gap: 4 }}>
+                    {generatedSentences.map((s, i) => (
+                      <div key={i} style={{ display: 'grid', gap: 2 }}>
+                        {/* 1. Korean sentence */}
+                        <div className="audio-ko" style={{ padding: '6px 8px', border: '1px solid #eee', borderRadius: 6 }}>{s.korean}</div>
+                        {/* 2. English sentence */}
+                        <div className="audio-en" style={{ padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6 }}>{s.english}</div>
+                        {/* 3. Word-by-word pairs (shown if toggle is on) */}
+                        {showAudioPatternDetails && Array.isArray(s.wordPairs) && s.wordPairs.length > 0 && (
+                          <div style={{ padding: '8px', background: '#f8f9fa', border: '1px solid #e0e0e0', borderRadius: 6, fontSize: 12 }}>
+                            <div style={{ fontWeight: 600, marginBottom: 6, color: '#666', fontSize: 11 }}>Word-by-word breakdown:</div>
+                            <div style={{ display: 'grid', gap: 4 }}>
+                              {s.wordPairs.map((pair, idx) => (
+                                <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                  <span className="audio-ko" style={{ minWidth: 100, fontWeight: 500 }}>{pair.ko || pair.korean || ''}</span>
+                                  <span style={{ color: '#999' }}>→</span>
+                                  <span className="audio-en" style={{ color: '#666' }}>{pair.en || pair.english || ''}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {/* 4. Korean sentence repeat (shown if toggle is on) */}
+                        {showAudioPatternDetails && (
+                          <div style={{ padding: '6px 8px', border: '1px solid #e3f2fd', borderRadius: 6, background: '#e3f2fd', fontSize: 11, color: '#666', fontStyle: 'italic' }}>
+                            <span style={{ marginRight: 6 }}>Repeat:</span>
+                            <span className="audio-ko">{s.korean}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+```
+- Modified `handleGenerateNewConversation` to generate word pairs for each sentence using `getWordByWordPairs`, following the audio pattern specification. Word pairs are stored in the `wordPairs` property of each sentence object.
+- Added `showAudioPatternDetails` state to control visibility of the audio pattern breakdown.
+- Updated the "Generated Sentences" display to show:
+  1. Korean sentence (always visible)
+  2. English sentence (always visible)
+  3. Word-by-word breakdown (shown when toggle is on, with Korean word → English translation pairs)
+  4. Korean sentence repeat (shown when toggle is on, with a visual indicator)
+- Added a "Show Pattern" / "Hide Pattern" toggle button in the header of the Generated Sentences section.
+- The audio pattern breakdown follows the standard pattern: English sentence → Korean sentence → Word pairs → Korean sentence repeat.
+
+### Edit: 2025-01-27
+- Files: `public/src/AudioLearningPage.js`
+- Summary: Fixed save/load functionality to preserve word pairs (word-by-word translations) when saving and loading conversations. The save button now saves exactly what should be said, including word pairs, and the load button restores them. Audio generation now uses saved word pairs if available instead of regenerating them.
+- Rationale: Bug fix - user reported that when saving and reloading conversations, only English and Korean sentences were played, not the word-by-word translations. The save button should save exactly what will be said according to the audio pattern.
+- Code refs:
+```965:991:public/src/AudioLearningPage.js
+  // Save current Level 3 conversation set (5 items)
+  // IMPORTANT: Save the complete sentence objects including wordPairs so they can be restored exactly
+  const saveConversationSet = React.useCallback(() => {
+    try {
+      const items = Array.isArray(generatedSentences) ? generatedSentences.slice(0, 5) : [];
+      if (!items || items.length === 0) return;
+      
+      // Ensure we save the complete objects with wordPairs preserved
+      const itemsToSave = items.map(item => ({
+        korean: String(item.korean || ''),
+        english: String(item.english || ''),
+        wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+          ko: String(pair.ko || pair.korean || ''),
+          en: String(pair.en || pair.english || '')
+        })) : [],
+        englishWordMapping: item.englishWordMapping || {}
+      }));
+      
+      const entry = { 
+        id, 
+        title, 
+        items: itemsToSave, // Save with wordPairs preserved
+        audioUrl: conversationAudioUrl || null,
+        createdAt: Date.now() 
+      };
+      persistConversations([entry, ...savedConversations]);
+```
+```1346:1375:public/src/AudioLearningPage.js
+        // Check if items already have wordPairs saved (from loaded conversation)
+        // If they do, use them; otherwise generate new ones
+        const hasWordPairs = items.every(item => Array.isArray(item.wordPairs) && item.wordPairs.length > 0);
+        
+        let sentencesWithPairs;
+        if (hasWordPairs) {
+          // Use saved word pairs - format them for prepareLevel3AudioData
+          setLevel3AudioProgress(10);
+          sentencesWithPairs = items.map(item => ({
+            english: String(item.english || ''),
+            korean: String(item.korean || ''),
+            wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+              ko: String(pair.ko || pair.korean || ''),
+              en: String(pair.en || pair.english || '')
+            })) : []
+          }));
+          setLevel3AudioProgress(50);
+        } else {
+          // Generate word pairs for all sentences using audio pattern utility
+          setLevel3AudioProgress(10);
+          sentencesWithPairs = await prepareLevel3AudioData(
+            items,
+            getWordByWordPairs,
+            (progress) => setLevel3AudioProgress(progress)
+          );
+        }
+```
+```2945:2955:public/src/AudioLearningPage.js
+                    <button className="audio-mini-btn" onClick={async () => {
+                      // Load the conversation items, preserving wordPairs if they exist
+                      const itemsToLoad = Array.isArray(c.items) ? c.items.map(item => ({
+                        korean: String(item.korean || ''),
+                        english: String(item.english || ''),
+                        wordPairs: Array.isArray(item.wordPairs) ? item.wordPairs.map(pair => ({
+                          ko: String(pair.ko || pair.korean || ''),
+                          en: String(pair.en || pair.english || '')
+                        })) : [],
+                        englishWordMapping: item.englishWordMapping || {}
+                      })) : [];
+                      
+                      setGeneratedSentences(itemsToLoad);
+```
+- Modified `saveConversationSet` to explicitly save wordPairs along with korean, english, and englishWordMapping, ensuring the complete audio pattern data is preserved.
+- Updated `handlePlayCurrentConversation` to check if items already have wordPairs saved, and if so, use them directly instead of regenerating via `prepareLevel3AudioData`. This ensures saved conversations play exactly as they were saved.
+- Updated the Load button handler to preserve wordPairs when loading conversations from savedConversations.
+- Updated auto-load on startup to preserve wordPairs when loading default conversations.
+- Updated Level 3 quiz loop to use saved wordPairs if available when generating audio for newly generated conversations that already have wordPairs.
+- All audio generation paths now check for existing wordPairs first before calling `getWordByWordPairs`, ensuring saved conversations play exactly as saved.
+
+### Edit: 2025-11-23
+- Files: `public/src/AudioLearningPage.js`
+- Summary: When creating a new conversation from the audio learning page, it is now automatically set as the default conversation. This means newly saved conversations will automatically load on the next page visit.
+- Rationale: Requested to automatically set newly created conversations as the default so users don't need to manually set them after saving.
+- Code refs:
+```1003:1015:public/src/AudioLearningPage.js
+      persistConversations([entry, ...savedConversations]);
+      // Automatically set as default conversation
+      setDefaultConversation(id);
+      // Save to server (shared DB) and refresh list
+      // Note: Server may not preserve wordPairs, but local storage will
+      (async () => {
+        try {
+          const serverId = await postServerConversation(title, itemsToSave);
+          if (serverId) {
+            await fetchServerConversations();
+          }
+        } catch (_) {}
+      })();
+    } catch (_) {}
+  }, [generatedSentences, conversationAudioUrl, savedConversations, persistConversations, postServerConversation, fetchServerConversations, setDefaultConversation]);
+```
+- Modified `saveConversationSet` function to call `setDefaultConversation(id)` immediately after creating a new conversation entry, and added `setDefaultConversation` to the dependency array.
+
+### Edit: 2025-11-23
+- Files: `public/src/styles/AudioLearningPage.css`
+- Summary: Redesigned AudioLearningPage to be mobile-first with proportional scaling for larger screens. Changed from 2-column desktop layout to single-column layout that scales proportionally. All sizing now uses CSS clamp() for responsive scaling from mobile base (~428px) to desktop. Web version now looks like a scaled-up version of mobile design.
+- Rationale: Requested to fix mobile UI and make web version look like a scaled version of mobile. Mobile-first approach ensures consistent experience across devices with proportional scaling.
+- Code refs:
+```1:59:public/src/styles/AudioLearningPage.css
+/* Mobile-first design: base at ~428px, scales proportionally for larger screens */
+.audio-page { 
+  /* Mobile base: 16px padding, scales with viewport */
+  padding: clamp(16px, 4vw, 32px) clamp(12px, 3vw, 24px); 
+  /* Mobile base width ~428px, scales up to max 600px for readability */
+  max-width: clamp(428px, 90vw, 600px); 
+  margin: 0 auto; 
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+.audio-title { 
+  margin: 0 0 clamp(6px, 1.5vw, 10px) 0; 
+  font-size: clamp(24px, 6vw, 32px); 
+}
+/* Single column layout (mobile-first, scales proportionally) */
+.audio-grid { 
+  display: grid; 
+  grid-template-columns: 1fr; 
+  gap: clamp(12px, 3vw, 16px); 
+  box-sizing: border-box;
+}
+```
+- Changed layout from 2-column grid to single-column (mobile-first)
+- Replaced all fixed pixel values with clamp() for responsive scaling
+- Container max-width scales from 428px (mobile) to 600px (desktop)
+- All font sizes, padding, margins, gaps, and border-radius now scale proportionally
+- Removed media query breakpoint that switched to single column (now always single column)
+- All typography and spacing scales smoothly from mobile to desktop using viewport-based units
+
+### Edit: 2025-11-23
+- Files: `public/src/AudioLearningPage.js`
+- Summary: New conversations are now automatically saved when generated. Modified `saveConversationSet` to accept an optional items parameter, and `handleGenerateNewConversation` now automatically calls `saveConversationSet` after generating a new conversation. The Save Conversation button remains available for manual saves.
+- Rationale: Requested to automatically save conversations when they are generated, while keeping the save button for manual control.
+- Code refs:
+```976:1017:public/src/AudioLearningPage.js
+  const saveConversationSet = React.useCallback((itemsToSaveOverride = null) => {
+    try {
+      const items = itemsToSaveOverride || (Array.isArray(generatedSentences) ? generatedSentences.slice(0, 5) : []);
+      if (!items || items.length === 0) return;
+      // ... rest of save logic
+```
+```1337:1342:public/src/AudioLearningPage.js
+        setGeneratedSentences(batchWithData);
+        setCurrentConversationId(null); // New conversation, not saved yet
+        setConversationAudioUrl('');
+        // Automatically save the new conversation
+        saveConversationSet(batchWithData);
+```
+- Modified `saveConversationSet` to accept optional `itemsToSaveOverride` parameter, allowing it to save items directly without relying on state
+- Updated `handleGenerateNewConversation` to automatically call `saveConversationSet` with the generated batch data after setting state
+- Save Conversation button remains functional for manual saves of existing conversations
+
+### Edit: 2025-11-23
+- Files: `public/src/AudioLearningPage.js`
+- Summary: Improved sentence structure visibility in the Generated Sentences display. Changed from vertical stacked layout to side-by-side Korean/English layout with clearer visual hierarchy. Word-by-word breakdown is now always visible in a compact, inline format showing the sentence structure more clearly. Added sentence numbers and better spacing/padding for readability.
+- Rationale: Requested to make sentence structure easier to see. The previous vertical stacked layout made it difficult to compare Korean and English sentences and understand the word-by-word mapping.
+- Code refs:
+```2693:2735:public/src/AudioLearningPage.js
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {generatedSentences.map((s, i) => (
+                      <div key={i} style={{ 
+                        padding: '12px', 
+                        border: '1px solid #e0e0e0', 
+                        borderRadius: 8, 
+                        background: '#fafafa',
+                        display: 'grid',
+                        gap: 8
+                      }}>
+                        {/* Sentence number */}
+                        <div style={{ fontSize: 11, fontWeight: 600, color: '#999', marginBottom: -4 }}>
+                          Sentence {i + 1}
+                        </div>
+                        
+                        {/* Korean and English side-by-side for better structure visibility */}
+                        <div style={{ 
+                          display: 'grid', 
+                          gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', 
+                          gap: 12, 
+                          alignItems: 'start'
+                        }}>
+                          {/* Korean and English columns with labels */}
+                        </div>
+                        
+                        {/* Word-by-word breakdown - always visible in a compact format */}
+                        {Array.isArray(s.wordPairs) && s.wordPairs.length > 0 && (
+                          <div style={{ 
+                            padding: '10px 12px', 
+                            background: '#f0f4f8', 
+                            border: '1px solid #cbd5e0', 
+                            borderRadius: 6, 
+                            fontSize: 12 
+                          }}>
+                            {/* Inline word pairs display */}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+```
+- Redesigned sentence display for maximum readability with larger, more prominent full sentences
+- Korean sentences displayed with blue border/background, English with green border/background for clear visual distinction
+- Word-by-word breakdown redesigned as numbered table-like structure with each pair in its own row
+- Each word pair clearly numbered (1, 2, 3...) and displayed with Korean word → English word in separate colored boxes
+- Increased font sizes, padding, and spacing throughout for better readability
+- Improved visual hierarchy with uppercase labels, colored borders, and distinct backgrounds
+- Word pairs displayed in a grid format that's easy to scan and understand the sentence structure
+
+### Edit: 2025-11-23
+- Files: `public/src/PracticePage.js`, `public/src/Navbar.js`
+- Summary: Added text size option for PracticePage. Users can now select from 50%, 60%, 70%, 80%, 90%, or 100% text sizes (100% is the maximum and default). The setting is persisted in localStorage and applies to Korean sentences, input fields, translations, and answer text. Added a "Text Size" dropdown control next to the Blanks and Mode controls, and also added "Practice Text Size" setting to the sidebar for easy access.
+- Rationale: Requested to add text size control for better readability on different screen sizes and user preferences. Updated to have smaller size options (50-100% range) with 100% as maximum.
+- Code refs:
+```195:201:public/src/PracticePage.js
+  const [textSize, setTextSize] = useState(() => {
+    try {
+      const saved = localStorage.getItem('practice_textSize');
+      return saved ? parseFloat(saved) : 1.0; // Default to 1.0 (100%)
+    } catch (_) {
+      return 1.0;
+    }
+  }); // Text size multiplier (0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+```
+```2660:2666:public/src/PracticePage.js
+      <p className="korean-sentence" style={{ 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'center', 
+        gap: 8, 
+        flexWrap: 'wrap',
+        fontSize: `${2.5 * textSize}rem`
+      }}>
+```
+```3030:3041:public/src/PracticePage.js
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <label style={{ fontSize: 12, color: '#666', fontWeight: 600 }}>Text Size:</label>
+              <select value={textSize} onChange={(e) => {
+                const val = parseFloat(e.target.value || '1.0');
+                setTextSize(val);
+                try { localStorage.setItem('practice_textSize', String(val)); } catch (_) {}
+              }} style={{ padding: 4, border: '1px solid #ddd', borderRadius: 4 }}>
+                <option value={0.5}>50%</option>
+                <option value={0.6}>60%</option>
+                <option value={0.7}>70%</option>
+                <option value={0.8}>80%</option>
+                <option value={0.9}>90%</option>
+                <option value={1.0}>100%</option>
+              </select>
+            </div>
+```
+```70:77:public/src/Navbar.js
+  const [practiceTextSize, setPracticeTextSize] = React.useState(() => {
+    try {
+      const saved = localStorage.getItem('practice_textSize');
+      return saved ? parseFloat(saved) : 1.0; // Default to 1.0 (100%)
+    } catch (_) {
+      return 1.0;
+    }
+  });
+```
+```383:406:public/src/Navbar.js
+              <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '0.5rem' }}>
+                <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Practice Text Size</span>
+                <select 
+                  value={practiceTextSize} 
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value || '1.0');
+                    setPracticeTextSize(val);
+                    try { localStorage.setItem('practice_textSize', String(val)); } catch (_) {}
+                    // Trigger a re-render by updating a state that PracticePage can read
+                    window.dispatchEvent(new Event('practice_textSize_changed'));
+                  }}
+                  style={{ padding: '6px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.9rem', width: '100%', maxWidth: '200px' }}
+                >
+                  <option value={0.5}>50%</option>
+                  <option value={0.6}>60%</option>
+                  <option value={0.7}>70%</option>
+                  <option value={0.8}>80%</option>
+                  <option value={0.9}>90%</option>
+                  <option value={1.0}>100%</option>
+                </select>
+              </div>
+```
+```224:237:public/src/PracticePage.js
+  // Listen for changes to text size setting from Navbar
+  useEffect(() => {
+    const handleTextSizeChange = () => {
+      try {
+        const saved = localStorage.getItem('practice_textSize');
+        setTextSize(saved ? parseFloat(saved) : 1.0);
+      } catch (_) {
+        setTextSize(1.0);
+      }
+    };
+    window.addEventListener('practice_textSize_changed', handleTextSizeChange);
+    return () => {
+      window.removeEventListener('practice_textSize_changed', handleTextSizeChange);
+    };
+  }, []);
+```
+- Added textSize state variable with localStorage persistence (default: 1.0)
+- Applied textSize multiplier to Korean sentence (2.5rem base), input fields (2.5rem base), translation (1.5rem base), and answer-below text (0.9rem base)
+- Added Text Size dropdown control in the settings area next to Blanks and Mode controls
+- Added Practice Text Size setting to sidebar (Navbar.js) for easy access
+- Added event listener in PracticePage.js to sync text size changes from sidebar
+- Text size options: 50%, 60%, 70%, 80%, 90%, 100% (100% is maximum, default)
+
+### Edit: 2025-11-23
+- Files: `public/src/**` (all page files and related modules)
+- Summary: Reorganized src folder into subfolders for each page. Created separate folders for AudioLearning, Practice, Chat, Grammar, Translation, Mix, Score, Stats, KpopLyrics, Curriculum, Pronunciation, ModelSentence, LexiconAdd, Home, Journal, and Navbar. Moved page files, related modules, and CSS files into their respective folders. Updated all import statements to use correct relative paths.
+- Rationale: Requested to organize the codebase by splitting the src folder into subfolders for each page to improve maintainability and code organization.
+- Code refs:
+  - Created folders: AudioLearning/, Practice/, Chat/, Grammar/, Translation/, Mix/, Score/, Stats/, KpopLyrics/, Curriculum/, Pronunciation/, ModelSentence/, LexiconAdd/, Home/, Journal/, Navbar/
+  - Moved page files: AudioLearningPage.js, PracticePage.js, ChatPage.js, etc. into respective folders
+  - Moved related modules: audioLearningMode.js, audioQuizModeHandsFree.js, audioQuizModeRecording.js, audioLoop.js, audioPattern.js, audioTTS.js, backgroundAudio.js, conversationGenerator.js, verbPractice.js to AudioLearning/
+  - Moved CSS files: AudioLearningPage.css, HomePage.css, GrammarPage.css, TranslationPage.css, StatsPage.css, PronunciationPage.css, ModelSentence.css, Navbar.css, LearningPage.css to respective page folders
+  - Updated App.js imports to use new folder structure (e.g., './AudioLearning/AudioLearningPage')
+  - Updated all relative imports from './api' to '../api' in subfolders
+  - Updated CSS imports to point to local CSS files in each folder
+  - Updated cross-page imports (e.g., verbPractice from AudioLearning folder)
+- Files moved:
+  - AudioLearning: AudioLearningPage.js, audioLearningMode.js, audioQuizModeHandsFree.js, audioQuizModeRecording.js, audioLoop.js, audioPattern.js, audioTTS.js, backgroundAudio.js, conversationGenerator.js, verbPractice.js, AudioLearningPage.css
+  - Practice: PracticePage.js
+  - Chat: ChatPage.js
+  - Grammar: GrammarPage.js, GrammarPage.css
+  - Translation: TranslationPage.js, TranslationBox.js, TranslationPage.css
+  - Mix: MixPage.js
+  - Score: ScorePage.js
+  - Stats: StatsPage.js, StatsPage.css
+  - KpopLyrics: KpopLyricsPage.js
+  - Curriculum: CurriculumPage.js
+  - Pronunciation: PronunciationPage.js, PronunciationPage.css
+  - ModelSentence: ModelSentence.js, ModelSentence.css
+  - LexiconAdd: LexiconAddPage.js
+  - Home: HomePage.js, HomePage.css, LearningPage.css
+  - Journal: JournalPage.js, JournalArchivePage.js
+  - Navbar: Navbar.js, Navbar.css
+
+### Edit: 2025-11-23
+- Files: `public/src/styles/HomePage.css`, `public/src/PracticePage.js`
+- Summary: Removed hardcoded font-size from `.fill-in-blank-input` CSS class to allow inline style to control font size. Added line-height to input field style to match Korean sentence text appearance. This ensures the blank input field text size matches the surrounding Korean text exactly.
+- Rationale: User requested that the blank text input field should be the same size as the Korean text for better visual consistency.
+- Code refs:
+```41:54:public/src/styles/HomePage.css
+.fill-in-blank-input {
+  border: none;
+  border-bottom: 2px solid #3498db;
+  background: none;
+  text-align: center;
+  color: #e74c3c;
+  margin: 0;
+  min-width: 3em;
+  max-width: 90vw;
+  padding: 5px 0;
+  vertical-align: baseline;
+  box-sizing: border-box;
+  /* font-size is controlled by inline style to match parent text size */
+}
+```
+```2710:2716:public/src/PracticePage.js
+                    autoFocus={idx === currentBlankIndex}
+                    style={{ 
+                      width: `${Math.max((blankPhrase.blanks[idx]?.length || 3) * 1.5, 3)}em`,
+                      borderColor: inputValues[idx] && idx === currentBlankIndex ? '#3498db' : undefined,
+                      fontSize: `${2.5 * textSize}rem`,
+                      lineHeight: '1.5'
+                    }}
+```
+- Removed hardcoded `font-size: 2.5rem` from `.fill-in-blank-input` CSS class
+- Added `lineHeight: '1.5'` to input field inline style to match Korean sentence line-height
+- Font size is now fully controlled by inline style which matches the parent Korean sentence font size
+- Added Practice Text Size setting to sidebar (Navbar.js) for easy access
+- Added event listener in PracticePage.js to sync text size changes from sidebar
